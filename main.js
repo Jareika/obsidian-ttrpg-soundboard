@@ -383,7 +383,8 @@ var DEFAULT_SETTINGS = {
   defaultFadeInMs: 3e3,
   defaultFadeOutMs: 3e3,
   allowOverlap: true,
-  masterVolume: 1
+  masterVolume: 1,
+  tileHeightPx: 220
 };
 var SoundboardSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
@@ -431,6 +432,11 @@ var SoundboardSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("Master volume").addSlider((s) => s.setLimits(0, 1, 0.01).setValue(this.plugin.settings.masterVolume).onChange(async (v) => {
       this.plugin.settings.masterVolume = v;
       this.plugin.engine?.setMasterVolume(v);
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Tile height (px)").setDesc("Adjust thumbnail tile height for the grid.").addSlider((s) => s.setLimits(120, 480, 10).setValue(this.plugin.settings.tileHeightPx).onChange(async (v) => {
+      this.plugin.settings.tileHeightPx = v;
+      this.plugin.applyCssVars();
       await this.plugin.saveSettings();
     }));
   }
@@ -495,6 +501,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian5.Plugin {
   }
   async onload() {
     await this.loadAll();
+    this.applyCssVars();
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
     this.registerView(
@@ -528,6 +535,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian5.Plugin {
   onunload() {
     this.engine?.stopAll(0);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
+  }
+  // NEW: set CSS variable for tile height
+  applyCssVars() {
+    const h = Math.max(60, Math.min(1e3, Number(this.settings.tileHeightPx || 220)));
+    document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
   }
   async activateView() {
     const { workspace } = this.app;
@@ -583,6 +595,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian5.Plugin {
   async saveSettings() {
     const data = { settings: this.settings, soundPrefs: this.soundPrefs };
     await this.saveData(data);
+    this.applyCssVars();
   }
 };
 //# sourceMappingURL=main.js.map

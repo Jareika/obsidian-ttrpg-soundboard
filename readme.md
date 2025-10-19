@@ -6,7 +6,7 @@ Thumbnails: place an image file (png/jpg/jpeg/webp) with the same base name as t
 
 ## Features
 - Root folder (default: `Soundbar`), choose subfolders per pane
-- Image tiles (thumbnails)
+- Image tiles (thumbnails), adjustable tile height in Settings (Tile height in px)
 - Per-title loop, volume, and fades (persisted)
 - Stop per title + Stop All
 - Fade in/out (defaults 3000 ms; per-title overrides)

@@ -16,6 +16,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   async onload() {
     await this.loadAll();
+
+    // Apply CSS variables (tile height) on load
+    this.applyCssVars();
+
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
 
@@ -54,6 +58,14 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   onunload() {
     this.engine?.stopAll(0);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
+    // Optional: reset CSS var
+    // document.documentElement.style.removeProperty("--ttrpg-tile-height");
+  }
+
+  // NEW: set CSS variable for tile height
+  applyCssVars() {
+    const h = Math.max(60, Math.min(1000, Number(this.settings.tileHeightPx || 220)));
+    document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
   }
 
   async activateView() {
@@ -81,13 +93,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       this.subfolders = [];
       this.allFiles = findAudioFiles(this.app, this.settings.folders, this.settings.extensions);
     }
-    this.refreshViews(); // stellt auch sicher, dass Dateien in die Views gesetzt werden
+    this.refreshViews();
   }
 
   refreshViews() {
     this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD).forEach(l => {
       const v = l.view as SoundboardView;
-      v.setFiles(this.allFiles); // wichtig: Dateien setzen, nicht nur rendern
+      v.setFiles(this.allFiles);
     });
   }
 
@@ -117,5 +129,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   async saveSettings() {
     const data: PersistedData = { settings: this.settings, soundPrefs: this.soundPrefs };
     await this.saveData(data);
+    // Ensure CSS reflects updated settings when called generically
+    this.applyCssVars();
   }
 }
