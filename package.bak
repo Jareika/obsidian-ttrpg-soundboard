@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-ttrpg-soundboard",
+  "version": "0.1.0",
+  "description": "Soundboard Plugin für Obsidian (TTRPG)",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch",
+    "package": "npm run build && node -e \"const v=require('./package.json').version; const n=`obsidian-ttrpg-soundboard-${v}.zip`; require('child_process').execSync(`npx bestzip ${n} manifest.json main.js styles.css versions.json LICENSE README.md`, {stdio:'inherit'})\"",
+    "sync-manifest-version": "node -e \"const fs=require('fs'); const m=JSON.parse(fs.readFileSync('manifest.json','utf8')); const p=JSON.parse(fs.readFileSync('package.json','utf8')); if(m.version!==p.version){m.version=p.version; fs.writeFileSync('manifest.json', JSON.stringify(m,null,2)); console.log('Synced manifest version to', p.version);} else {console.log('Versions already match');}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "bestzip": "^2.2.1",
+    "esbuild": "^0.21.5",
+    "obsidian": "^1.6.3",
+    "tslib": "^2.6.3",
+    "typescript": "^5.4.5"
+  },
+  "license": "MIT"
+}

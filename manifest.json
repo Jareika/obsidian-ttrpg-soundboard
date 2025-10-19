@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-ttrpg-soundboard",
+  "name": "Obsidian TTRPG Soundboard",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.3",
+  "description": "Soundboard mit Bild-Buttons, Mehrfach-Wiedergabe, Loop, per-Sound & Master-Volume sowie Stop All.",
+  "author": "Your Name",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
