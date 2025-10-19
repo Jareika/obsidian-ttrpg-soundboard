@@ -1,33 +1,37 @@
 # Obsidian TTRPG Soundboard
 
-Spiele mehrere Sounds gleichzeitig (Loop, Fade-In/Out, per-Sound-Volume, Master-Volume). Mobile-first. Thumbnails: Lege eine Bilddatei (png/jpg/jpeg/webp) mit gleichem Namen wie der Sound in denselben Ordner (dragon.mp3 ? dragon.jpg).
+Use Obsidian as a soundboard for your TTRPG sessions. Play multiple sounds at once with per-title loop and fades, a master volume, and a simple tile UI with thumbnails.
+
+Thumbnails: place an image file (png/jpg/jpeg/webp) with the same base name as the sound in the same folder (e.g., dragon.mp3 ? dragon.jpg).
 
 ## Features
-- Pro Pane Ordner wählen (Dropdown)
-- Bild-Buttons (Thumbnails)
-- Loop & Volume pro Sound (persistiert)
-- Stop pro Sound & Stop All
-- Fade-In/Out (Standard 3000 ms)
-- Formate: mp3, ogg, wav, m4a (flac eingeschränkt auf iOS)
+- Root folder (default: `Soundbar`), choose subfolders per pane
+- Image tiles (thumbnails)
+- Per-title loop, volume, and fades (persisted)
+- Stop per title + Stop All
+- Fade in/out (defaults 3000 ms; per-title overrides)
+- Formats: mp3, ogg, wav, m4a (flac may not be supported on iOS)
 
-## Installation (manuell)
-1. Release-Assets (manifest.json, main.js, styles.css, versions.json) herunterladen.
-2. In [Vault]/.obsidian/plugins/obsidian-ttrpg-soundboard/ ablegen.
-3. Plugin in Obsidian aktivieren.
+## Installation (manual)
+1. Download release assets (manifest.json, main.js, styles.css, versions.json).
+2. Place them in `[Vault]/.obsidian/plugins/obsidian-ttrpg-soundboard/`.
+3. Enable the plugin in Obsidian.
 
-## Nutzung
-- Ribbon-Icon oder Command „Open Soundboard View“.
-- Ordner im Dropdown wählen.
-- Tile anklicken ? Play (mit Fade-In). Loop/Stop/Per-Sound-Volume unter jedem Tile.
-- Stop All in der Toolbar.
+## Usage
+- Ribbon icon or command “Open Soundboard View”
+- Set your root folder in settings; choose subfolder in the pane dropdown
+- Click a tile to play (fade-in). Loop/Stop on each card. Gear button opens per-title settings (loop, per-title volume, fade in/out).
+- Stop All in the toolbar
 
-## Entwicklung
-```
+## Development
+
 npm i
 npm run dev
-```
-Symlink ins Vault optional.
 
-## Hinweise
-- iOS/Safari unterstützen FLAC meist nicht – mp3/wav/m4a/ogg bevorzugen.
-- Wiedergabe läuft beim Pane-Wechsel weiter. Beim Deaktivieren des Plugins werden alle Sounds gestoppt.
+
+## Notes
+- iOS/Safari may not decode FLAC; prefer mp3/wav/m4a/ogg for mobile.
+- Playback continues when switching panes. All sounds stop when the plugin is disabled.
+
+## License
+MIT

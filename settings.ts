@@ -1,7 +1,9 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 
 export interface SoundboardSettings {
-  folders: string[];
+  rootFolder: string;        // e.g. "Soundbar"
+  includeRootFiles: boolean; // false = only subfolders
+  folders: string[];         // legacy fallback when rootFolder is empty
   extensions: string[];
   defaultFadeInMs: number;
   defaultFadeOutMs: number;
@@ -10,6 +12,8 @@ export interface SoundboardSettings {
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
+  rootFolder: "Soundbar",
+  includeRootFiles: false,
   folders: ["TTRPG Sounds"],
   extensions: ["mp3", "ogg", "wav", "m4a", "flac"],
   defaultFadeInMs: 3000,
@@ -20,21 +24,40 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
 
 export class SoundboardSettingTab extends PluginSettingTab {
   plugin: any;
-  constructor(app: App, plugin: any) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
+  constructor(app: App, plugin: any) { super(app, plugin); this.plugin = plugin; }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "TTRPG Soundboard – Einstellungen" });
+    containerEl.createEl("h2", { text: "TTRPG Soundboard - Settings" });
 
     new Setting(containerEl)
-      .setName("Ordner (kommagetrennt)")
-      .setDesc("Vault-relative Ordner, die durchsucht werden.")
-      .addText(t => t
-        .setPlaceholder("z.B. TTRPG Sounds, Audio/SFX")
+      .setName("Root folder")
+      .setDesc("Only subfolders under this folder are listed as options. Example: Soundbar")
+      .addText(ti => ti
+        .setPlaceholder("Soundbar")
+        .setValue(this.plugin.settings.rootFolder)
+        .onChange(async v => {
+          this.plugin.settings.rootFolder = v.trim();
+          await this.plugin.saveSettings();
+          await this.plugin.rescan();
+        }));
+
+    new Setting(containerEl)
+      .setName("Include files directly in root")
+      .setDesc("If enabled, files directly in the root folder are listed (otherwise only in subfolders).")
+      .addToggle(tg => tg
+        .setValue(this.plugin.settings.includeRootFiles)
+        .onChange(async v => {
+          this.plugin.settings.includeRootFiles = v;
+          await this.plugin.saveSettings();
+          await this.plugin.rescan();
+        }));
+
+    new Setting(containerEl)
+      .setName("Folders (legacy, comma-separated)")
+      .setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX")
+      .addText(ti => ti
         .setValue(this.plugin.settings.folders.join(", "))
         .onChange(async v => {
           this.plugin.settings.folders = v.split(",").map(s => s.trim()).filter(Boolean);
@@ -43,9 +66,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Erlaubte Endungen")
-      .setDesc("Kommagetrennt, z.B. mp3, ogg, wav, m4a, flac (Achtung: flac nicht überall unterstützt).")
-      .addText(t => t
+      .setName("Allowed extensions")
+      .setDesc("Comma-separated, e.g. mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).")
+      .addText(ti => ti
         .setValue(this.plugin.settings.extensions.join(", "))
         .onChange(async v => {
           this.plugin.settings.extensions = v.split(",").map(s => s.trim().replace(/^\./,"")).filter(Boolean);
@@ -55,7 +78,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Fade-In (ms)")
-      .addText(t => t
+      .addText(ti => ti
         .setValue(String(this.plugin.settings.defaultFadeInMs))
         .onChange(async v => {
           const n = Number(v); if (!Number.isNaN(n)) this.plugin.settings.defaultFadeInMs = n;
@@ -64,7 +87,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Fade-Out (ms)")
-      .addText(t => t
+      .addText(ti => ti
         .setValue(String(this.plugin.settings.defaultFadeOutMs))
         .onChange(async v => {
           const n = Number(v); if (!Number.isNaN(n)) this.plugin.settings.defaultFadeOutMs = n;
@@ -72,9 +95,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Overlap erlauben")
-      .setDesc("Mehrere Sounds gleichzeitig abspielen.")
-      .addToggle(t => t
+      .setName("Allow overlap")
+      .setDesc("Play multiple sounds at the same time.")
+      .addToggle(tg => tg
         .setValue(this.plugin.settings.allowOverlap)
         .onChange(async v => {
           this.plugin.settings.allowOverlap = v;
@@ -82,7 +105,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Master-Volume")
+      .setName("Master volume")
       .addSlider(s => s
         .setLimits(0, 1, 0.01)
         .setValue(this.plugin.settings.masterVolume)

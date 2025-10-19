@@ -5,9 +5,12 @@ export interface PlayOptions {
   loop?: boolean;
   fadeInMs?: number;
 }
+export interface StopOptions { fadeOutMs?: number; }
 
-export interface StopOptions {
-  fadeOutMs?: number;
+export interface PlaybackEvent {
+  type: "start" | "stop";
+  filePath: string;
+  id: string;
 }
 
 export class AudioEngine {
@@ -17,8 +20,12 @@ export class AudioEngine {
   private buffers = new Map<string, AudioBuffer>();
   private playing = new Map<string, { id: string; source: AudioBufferSourceNode; gain: GainNode; file: TFile; stopped: boolean }>();
   private masterVolume = 1;
+  private listeners = new Set<(e: PlaybackEvent) => void>();
 
   constructor(app: App) { this.app = app; }
+
+  on(cb: (e: PlaybackEvent) => void) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
+  private emit(e: PlaybackEvent) { this.listeners.forEach(fn => { try { fn(e); } catch {} }); }
 
   setMasterVolume(v: number) {
     this.masterVolume = Math.max(0, Math.min(1, v));
@@ -50,7 +57,6 @@ export class AudioEngine {
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      // Safari/iOS: Callback-Variante
       ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     this.buffers.set(key, audioBuffer);
@@ -87,11 +93,13 @@ export class AudioEngine {
 
     const rec = { id, source, gain, file, stopped: false };
     this.playing.set(id, rec);
+    this.emit({ type: "start", filePath: file.path, id });
 
     source.onended = () => {
       const r = this.playing.get(id);
       if (!r || r.stopped) return;
       this.playing.delete(id);
+      this.emit({ type: "stop", filePath: file.path, id });
     };
 
     return {
@@ -116,10 +124,12 @@ export class AudioEngine {
       setTimeout(() => {
         try { rec.source.stop(); } catch {}
         this.playing.delete(id);
+        this.emit({ type: "stop", filePath: rec.file.path, id });
       }, Math.max(1, sOpts?.fadeOutMs ?? 0));
     } else {
       try { rec.source.stop(); } catch {}
       this.playing.delete(id);
+      this.emit({ type: "stop", filePath: rec.file.path, id });
     }
   }
 
@@ -137,5 +147,11 @@ export class AudioEngine {
     for (const f of files) {
       try { await this.loadBuffer(f); } catch (e) { console.warn("Preload failed", f.path, e); }
     }
+  }
+
+  getPlayingFilePaths(): string[] {
+    const set = new Set<string>();
+    for (const v of this.playing.values()) set.add(v.file.path);
+    return [...set];
   }
 }

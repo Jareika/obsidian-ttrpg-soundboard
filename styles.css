@@ -1,3 +1,8 @@
+:root {
+  /* Adjust the tile height here if you want bigger/smaller thumbnails */
+  --ttrpg-tile-height: 100px; /* try 240px or 300px as you like */
+}
+
 .ttrpg-sb-toolbar {
   display: flex;
   gap: 8px;
@@ -5,11 +10,22 @@
   margin-bottom: 8px;
   flex-wrap: wrap;
 }
+.ttrpg-sb-toolbar .ttrpg-sb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
 
 .ttrpg-sb-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
 }
 
 .ttrpg-sb-card {
@@ -21,10 +37,17 @@
   gap: 8px;
 }
 
+.ttrpg-sb-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
 .ttrpg-sb-tile {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: var(--ttrpg-tile-height, 220px); /* robust alternative to aspect-ratio */
   border-radius: 6px;
   background: linear-gradient(135deg, var(--background-modifier-form-field), var(--background-secondary));
   background-size: cover;
@@ -32,38 +55,16 @@
   border: 1px solid var(--background-modifier-border);
   cursor: pointer;
 }
-
 .ttrpg-sb-tile:hover { filter: brightness(1.02); }
 
-.ttrpg-sb-tile-label {
-  position: absolute;
-  left: 6px; right: 6px; bottom: 6px;
-  padding: 4px 6px;
-  background: rgba(0,0,0,0.4);
-  color: var(--text-on-accent);
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.ttrpg-sb-btnrow, .ttrpg-sb-volrow {
+.ttrpg-sb-btnrow {
   display: flex;
   gap: 6px;
   align-items: center;
 }
-```
 
-Datei: versions.json
-```
-{
-  "0.1.0": "1.6.3"
+.ttrpg-sb-stop.playing {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
 }
-```
-
-Datei: .gitignore
-```
-node_modules
-.DS_Store
-.vscode
-*.log
-*.zip
-main.js.map

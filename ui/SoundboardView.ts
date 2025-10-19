@@ -1,5 +1,6 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
+import { PerSoundSettingsModal } from "./PerSoundSettingsModal";
 
 export const VIEW_TYPE_TTRPG_SOUNDBOARD = "ttrpg-soundboard-view";
 
@@ -9,6 +10,8 @@ export default class SoundboardView extends ItemView {
   plugin: TTRPGSoundboardPlugin;
   state: ViewState = {};
   files: TFile[] = [];
+  playing = new Set<string>();
+  private unsubEngine?: () => void;
 
   constructor(leaf: WorkspaceLeaf, plugin: TTRPGSoundboardPlugin) {
     super(leaf);
@@ -19,19 +22,21 @@ export default class SoundboardView extends ItemView {
   getDisplayText() { return "TTRPG Soundboard"; }
   getIcon() { return "music"; }
 
-  async onOpen() { this.render(); }
-  async onClose() { /* Playback läuft unabhängig weiter */ }
-
-  getState(): ViewState { return { ...this.state }; }
-  async setState(state: ViewState) {
-    this.state = { ...state };
-    await this.render();
-  }
-
-  setFiles(files: TFile[]) {
-    this.files = files;
+  async onOpen() {
+    this.playing = new Set(this.plugin.engine.getPlayingFilePaths());
+    this.unsubEngine = this.plugin.engine.on(e => {
+      if (e.type === "start") this.playing.add(e.filePath);
+      else this.playing.delete(e.filePath);
+      this.updatePlayingVisuals();
+    });
     this.render();
   }
+
+  async onClose() { this.unsubEngine?.(); this.unsubEngine = undefined; }
+
+  getState(): ViewState { return { ...this.state }; }
+  async setState(state: ViewState) { this.state = { ...state }; await this.render(); }
+  setFiles(files: TFile[]) { this.files = files; this.render(); }
 
   private filteredFiles(): TFile[] {
     const folder = (this.state.folder || "").replace(/^\/+|\/+$/g, "");
@@ -61,19 +66,21 @@ export default class SoundboardView extends ItemView {
     // Toolbar
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
 
-    // Ordnerauswahl pro Pane
     const folderSelect = toolbar.createEl("select");
-    folderSelect.createEl("option", { text: "Alle Ordner", value: "" });
-    for (const f of this.plugin.settings.folders) folderSelect.createEl("option", { text: f, value: f });
+    folderSelect.createEl("option", { text: "All folders", value: "" });
+    const opts = (this.plugin.subfolders?.length ? this.plugin.subfolders : this.plugin.settings.folders) ?? [];
+    for (const f of opts) {
+      const label = this.plugin.subfolders?.length
+        ? f.replace(new RegExp("^" + this.plugin.settings.rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?"), "")
+        : f;
+      folderSelect.createEl("option", { text: label, value: f });
+    }
     folderSelect.value = this.state.folder ?? "";
     folderSelect.onchange = async () => {
       this.state.folder = folderSelect.value || undefined;
       await this.saveViewState();
       this.render();
     };
-
-    const reloadBtn = toolbar.createEl("button", { text: "Reload" });
-    reloadBtn.onclick = () => this.plugin.rescan();
 
     const stopAllBtn = toolbar.createEl("button", { text: "Stop All" });
     stopAllBtn.onclick = () => this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
@@ -93,14 +100,12 @@ export default class SoundboardView extends ItemView {
 
     for (const file of this.filteredFiles()) {
       const card = grid.createDiv({ cls: "ttrpg-sb-card" });
+      card.createDiv({ cls: "ttrpg-sb-title", text: file.basename });
 
-      // Tile (Bild-Button)
       const tile = card.createEl("button", { cls: "ttrpg-sb-tile", attr: { "aria-label": file.basename } });
       const thumb = this.findThumbFor(file);
       if (thumb) tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(thumb)})`;
-      tile.createSpan({ cls: "ttrpg-sb-tile-label", text: file.basename });
 
-      // Per-Sound-Prefs (Loop, Volume)
       const pref = this.plugin.getSoundPref(file.path);
 
       tile.onclick = async () => {
@@ -110,37 +115,43 @@ export default class SoundboardView extends ItemView {
         await this.plugin.engine.play(file, {
           volume: (pref.volume ?? 1) * this.plugin.settings.masterVolume,
           loop: !!pref.loop,
-          fadeInMs: this.plugin.settings.defaultFadeInMs,
+          fadeInMs: (pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs),
         });
       };
 
       const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
       const loopBtn = controls.createEl("button");
-      const updateLoop = () => loopBtn.textContent = `Loop: ${pref.loop ? "On" : "Off"}`;
-      updateLoop();
+      const paintLoop = () => loopBtn.textContent = pref.loop ? "Loop: On" : "Loop: Off";
+      paintLoop();
       loopBtn.onclick = async () => {
         pref.loop = !pref.loop;
         this.plugin.setSoundPref(file.path, pref);
         await this.plugin.saveSettings();
-        updateLoop();
+        paintLoop();
       };
 
       const stopBtn = controls.createEl("button", { text: "Stop" });
+      stopBtn.classList.add("ttrpg-sb-stop");
+      stopBtn.dataset.path = file.path;
+      if (this.playing.has(file.path)) stopBtn.classList.add("playing");
       stopBtn.onclick = async () => {
-        await this.plugin.engine.stopByFile(file, this.plugin.settings.defaultFadeOutMs);
+        await this.plugin.engine.stopByFile(file, (pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs));
       };
 
-      const volRow = card.createDiv({ cls: "ttrpg-sb-volrow" });
-      volRow.createSpan({ text: "Vol " });
-      const perVol = volRow.createEl("input", { type: "range" });
-      perVol.min = "0"; perVol.max = "1"; perVol.step = "0.01";
-      perVol.value = String(pref.volume ?? 1);
-      perVol.oninput = async () => {
-        pref.volume = Number(perVol.value);
-        this.plugin.setSoundPref(file.path, pref);
-        await this.plugin.saveSettings();
-      };
+      const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
+      setIcon(gearPerBtn, "gear");
+      gearPerBtn.setAttr("aria-label", "Per-title settings");
+      gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
     }
+  }
+
+  private updatePlayingVisuals() {
+    const btns = this.contentEl.querySelectorAll<HTMLButtonElement>(".ttrpg-sb-stop");
+    btns.forEach(b => {
+      const p = b.dataset.path || "";
+      if (this.playing.has(p)) b.classList.add("playing");
+      else b.classList.remove("playing");
+    });
   }
 }

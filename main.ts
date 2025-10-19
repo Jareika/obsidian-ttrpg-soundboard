@@ -2,9 +2,9 @@ import { Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { AudioEngine } from "./audio/AudioEngine";
 import SoundboardView, { VIEW_TYPE_TTRPG_SOUNDBOARD } from "./ui/SoundboardView";
 import { SoundboardSettings, DEFAULT_SETTINGS, SoundboardSettingTab } from "./settings";
-import { findAudioFiles } from "./util/fileDiscovery";
+import { findAudioFiles, findAudioFilesUnderRoot, listSubfolders } from "./util/fileDiscovery";
 
-interface SoundPrefs { loop?: boolean; volume?: number; }
+interface SoundPrefs { loop?: boolean; volume?: number; fadeInMs?: number; fadeOutMs?: number; }
 interface PersistedData { settings?: SoundboardSettings; soundPrefs?: Record<string, SoundPrefs>; }
 
 export default class TTRPGSoundboardPlugin extends Plugin {
@@ -12,6 +12,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   soundPrefs: Record<string, SoundPrefs> = {};
   engine: AudioEngine;
   allFiles: TFile[] = [];
+  subfolders: string[] = [];
 
   async onload() {
     await this.loadAll();
@@ -32,11 +33,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }});
     this.addCommand({ id: "reload-audio-list", name: "Reload audio list", callback: () => this.rescan() });
 
-    // Vault-Änderungen
     this.registerEvent(this.app.vault.on("create", () => this.rescanDebounced()));
     this.registerEvent(this.app.vault.on("delete", () => this.rescanDebounced()));
     this.registerEvent(this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
-      // Prefs an neuen Pfad migrieren
       if (file instanceof TFile) {
         const pref = this.soundPrefs[oldPath];
         if (pref) {
@@ -49,12 +48,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }));
 
     this.addSettingTab(new SoundboardSettingTab(this.app, this));
-
     await this.rescan();
   }
 
   onunload() {
-    // Beim Deaktivieren des Plugins stoppen
     this.engine?.stopAll(0);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
   }
@@ -77,18 +74,29 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   }
 
   async rescan() {
-    this.allFiles = findAudioFiles(this.app, this.settings.folders, this.settings.extensions);
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD)
-      .forEach(l => (l.view as SoundboardView).setFiles(this.allFiles));
+    if (this.settings.rootFolder?.trim()) {
+      this.subfolders = listSubfolders(this.app, this.settings.rootFolder);
+      this.allFiles = findAudioFilesUnderRoot(this.app, this.settings.rootFolder, this.settings.extensions, this.settings.includeRootFiles);
+    } else {
+      this.subfolders = [];
+      this.allFiles = findAudioFiles(this.app, this.settings.folders, this.settings.extensions);
+    }
+    this.refreshViews(); // stellt auch sicher, dass Dateien in die Views gesetzt werden
+  }
+
+  refreshViews() {
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD).forEach(l => {
+      const v = l.view as SoundboardView;
+      v.setFiles(this.allFiles); // wichtig: Dateien setzen, nicht nur rendern
+    });
   }
 
   private rescanTimer: number | null = null;
-  rescanDebounced(delay = 400) {
+  rescanDebounced(delay = 300) {
     if (this.rescanTimer) window.clearTimeout(this.rescanTimer);
     this.rescanTimer = window.setTimeout(() => this.rescan(), delay);
   }
 
-  // Per-Sound-Präferenzen
   getSoundPref(path: string): SoundPrefs {
     return this.soundPrefs[path] ?? (this.soundPrefs[path] = {});
   }
@@ -96,7 +104,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.soundPrefs[path] = pref;
   }
 
-  // Persistenz (settings + soundPrefs)
   async loadAll() {
     const data = (await this.loadData()) as PersistedData | null;
     if (data?.settings) {
