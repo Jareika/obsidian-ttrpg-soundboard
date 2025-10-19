@@ -598,4 +598,3 @@ var TTRPGSoundboardPlugin = class extends import_obsidian5.Plugin {
     this.applyCssVars();
   }
 };
-//# sourceMappingURL=main.js.map
