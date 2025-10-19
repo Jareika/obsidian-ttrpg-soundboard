@@ -11,6 +11,7 @@ Thumbnails: place an image file (png/jpg/jpeg/webp) with the same base name as t
 - Stop per title + Stop All
 - Fade in/out (defaults 3000 ms; per-title overrides)
 - Formats: mp3, ogg, wav, m4a (flac may not be supported on iOS)
+- “adjustable tile height in Settings (30–300 px)”.
 
 ## Installation (manual)
 1. Download release assets (manifest.json, main.js, styles.css, versions.json).

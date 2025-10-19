@@ -64,7 +64,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   // NEW: set CSS variable for tile height
   applyCssVars() {
-    const h = Math.max(60, Math.min(1000, Number(this.settings.tileHeightPx || 220)));
+    const h = Math.max(30, Math.min(400, Number(this.settings.tileHeightPx || 100)));
     document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
   }
 

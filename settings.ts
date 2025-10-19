@@ -9,7 +9,7 @@ export interface SoundboardSettings {
   defaultFadeOutMs: number;
   allowOverlap: boolean;
   masterVolume: number;
-  tileHeightPx: number;      // NEW: tile height in px
+  tileHeightPx: number;      // tile height in px
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   defaultFadeOutMs: 3000,
   allowOverlap: true,
   masterVolume: 1,
-  tileHeightPx: 220
+  tileHeightPx: 100
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -117,12 +117,12 @@ export class SoundboardSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    // NEW: Tile height slider
+    // Tile height slider: 30–300 px
     new Setting(containerEl)
       .setName("Tile height (px)")
       .setDesc("Adjust thumbnail tile height for the grid.")
       .addSlider(s => s
-        .setLimits(120, 480, 10)
+        .setLimits(30, 300, 1)
         .setValue(this.plugin.settings.tileHeightPx)
         .onChange(async v => {
           this.plugin.settings.tileHeightPx = v;

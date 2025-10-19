@@ -384,7 +384,7 @@ var DEFAULT_SETTINGS = {
   defaultFadeOutMs: 3e3,
   allowOverlap: true,
   masterVolume: 1,
-  tileHeightPx: 220
+  tileHeightPx: 100
 };
 var SoundboardSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
@@ -434,7 +434,7 @@ var SoundboardSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.engine?.setMasterVolume(v);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("Tile height (px)").setDesc("Adjust thumbnail tile height for the grid.").addSlider((s) => s.setLimits(120, 480, 10).setValue(this.plugin.settings.tileHeightPx).onChange(async (v) => {
+    new import_obsidian3.Setting(containerEl).setName("Tile height (px)").setDesc("Adjust thumbnail tile height for the grid.").addSlider((s) => s.setLimits(30, 300, 1).setValue(this.plugin.settings.tileHeightPx).onChange(async (v) => {
       this.plugin.settings.tileHeightPx = v;
       this.plugin.applyCssVars();
       await this.plugin.saveSettings();
@@ -538,7 +538,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian5.Plugin {
   }
   // NEW: set CSS variable for tile height
   applyCssVars() {
-    const h = Math.max(60, Math.min(1e3, Number(this.settings.tileHeightPx || 220)));
+    const h = Math.max(30, Math.min(400, Number(this.settings.tileHeightPx || 100)));
     document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
   }
   async activateView() {
