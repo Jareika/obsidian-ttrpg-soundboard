@@ -1,10 +1,10 @@
 {
-  "id": "obsidian-ttrpg-soundboard",
-  "name": "Obsidian TTRPG Soundboard",
-  "version": "0.1.7",
+  "id": "ttrpg-soundboard",
+  "name": "TTRPG Soundboard",
+  "version": "0.2.0",
   "minAppVersion": "1.6.3",
-  "description": "Use Obsidian as a soundboard: image tiles (adjustable height), per-title loop and fades, Stop All, root folder + subfolders.",
-  "author": "Your Name",
+  "description": "Soundboard for TTRPG sessions: image tiles (adjustable height), per-title loop and fades, Stop All, root folder + subfolders.",
+  "author": "Jareika",
   "authorUrl": "",
   "isDesktopOnly": false
 }
