@@ -290,7 +290,11 @@ var SoundboardView = class extends import_obsidian2.ItemView {
     return null;
   }
   async saveViewState() {
-    await this.leaf.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, state: this.getState(), active: true });
+    await this.leaf.setViewState({
+      type: VIEW_TYPE_TTRPG_SOUNDBOARD,
+      state: this.getState(),
+      active: true
+    });
   }
   render() {
     const { contentEl } = this;
@@ -341,8 +345,19 @@ var SoundboardView = class extends import_obsidian2.ItemView {
         });
       };
       const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
-      const loopBtn = controls.createEl("button");
-      const paintLoop = () => loopBtn.textContent = pref.loop ? "Loop: On" : "Loop: Off";
+      const loopBtn = controls.createEl("button", {
+        cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
+        text: "Loop",
+        attr: {
+          "aria-label": "Toggle loop",
+          "aria-pressed": String(!!pref.loop),
+          "type": "button"
+        }
+      });
+      const paintLoop = () => {
+        loopBtn.toggleClass("active", !!pref.loop);
+        loopBtn.setAttr("aria-pressed", String(!!pref.loop));
+      };
       paintLoop();
       loopBtn.onclick = async () => {
         pref.loop = !pref.loop;
@@ -350,14 +365,13 @@ var SoundboardView = class extends import_obsidian2.ItemView {
         await this.plugin.saveSettings();
         paintLoop();
       };
-      const stopBtn = controls.createEl("button", { text: "Stop" });
-      stopBtn.classList.add("ttrpg-sb-stop");
+      const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
       stopBtn.dataset.path = file.path;
       if (this.playing.has(file.path)) stopBtn.classList.add("playing");
       stopBtn.onclick = async () => {
         await this.plugin.engine.stopByFile(file, pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs);
       };
-      const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
+      const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
       (0, import_obsidian2.setIcon)(gearPerBtn, "gear");
       gearPerBtn.setAttr("aria-label", "Per-title settings");
       gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();

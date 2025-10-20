@@ -1,31 +1,13 @@
 :root {
-  /* Adjust the tile height here if you want bigger/smaller thumbnails */
-  --ttrpg-tile-height: 100px; /* try 240px or 300px as you like */
+  --ttrpg-tile-height: 100px;
+  --ttrpg-grid-gap: 16px;
 }
 
-.ttrpg-sb-toolbar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-.ttrpg-sb-toolbar .ttrpg-sb-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-secondary);
-  cursor: pointer;
-}
 
 .ttrpg-sb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  gap: var(--ttrpg-grid-gap, 10px);
 }
 
 .ttrpg-sb-card {
@@ -47,7 +29,7 @@
 .ttrpg-sb-tile {
   position: relative;
   width: 100%;
-  height: var(--ttrpg-tile-height, 220px); /* robust alternative to aspect-ratio */
+  height: var(--ttrpg-tile-height, 220px);
   border-radius: 6px;
   background: linear-gradient(135deg, var(--background-modifier-form-field), var(--background-secondary));
   background-size: cover;
@@ -59,12 +41,75 @@
 
 .ttrpg-sb-btnrow {
   display: flex;
-  gap: 6px;
   align-items: center;
+  gap: 8px;
 }
 
+/* Einheitliche Button-Grundwerte für Icon- und Stop-Buttons */
+.ttrpg-sb-icon-btn,
+.ttrpg-sb-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+
+/* Icon-Buttons quadratisch */
+.ttrpg-sb-icon-btn {
+  width: 28px;
+  padding: 0;
+}
+
+/* Stop-Button mit Text: gleich hoch, aber mit horizontaler Polsterung */
+.ttrpg-sb-stop {
+  padding: 0 10px;
+  line-height: 1;             /* verhindert Höhenabweichungen durch Text */
+}
+
+/* Zahnrad sauber an den rechten Rand innerhalb der Reihe schieben */
+.push-right { margin-left: auto; }
+
+/* Loop aktiv sichtbar machen */
+.ttrpg-sb-loop.active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* Tablet-Tuning */
+@media (max-width: 1024px) {
+  .ttrpg-sb-btnrow { gap: 6px; }
+  .ttrpg-sb-icon-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+  }
+  .ttrpg-sb-stop { height: 24px; padding: 0 8px; }  /* Stop-Button passt sich an */
+  .ttrpg-sb-title { margin-bottom: 0; }
+}
+
+/* Stop-Button, wenn ein Titel spielt */
 .ttrpg-sb-stop.playing {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
+}
+/* Loop-Button als Text: Icon-Basis überschreiben */
+.ttrpg-sb-loop {
+  width: auto;          /* statt 28px */
+  padding: 0 10px;      /* horizontal etwas Polsterung */
+  line-height: 1;       /* verhindert Höhenabweichungen durch Text */
+}
+
+/* Responsive Tuning für kleinere Displays */
+@media (max-width: 1024px) {
+  .ttrpg-sb-loop {
+    height: 24px;
+    padding: 0 8px;
+  }
 }

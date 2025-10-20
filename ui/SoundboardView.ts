@@ -56,7 +56,11 @@ export default class SoundboardView extends ItemView {
   }
 
   private async saveViewState() {
-    await this.leaf.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, state: this.getState(), active: true });
+    await this.leaf.setViewState({
+      type: VIEW_TYPE_TTRPG_SOUNDBOARD,
+      state: this.getState(),
+      active: true,
+    });
   }
 
   render() {
@@ -119,11 +123,26 @@ export default class SoundboardView extends ItemView {
         });
       };
 
+      // Buttonreihe
       const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
-      const loopBtn = controls.createEl("button");
-      const paintLoop = () => loopBtn.textContent = pref.loop ? "Loop: On" : "Loop: Off";
+      // 1) Loop-Button (Text, aktiv farblich hervorgehoben)
+      const loopBtn = controls.createEl("button", {
+        cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
+        text: "Loop",
+        attr: {
+          "aria-label": "Toggle loop",
+          "aria-pressed": String(!!pref.loop),
+          "type": "button"
+        }
+      });
+
+      const paintLoop = () => {
+        loopBtn.toggleClass("active", !!pref.loop);
+        loopBtn.setAttr("aria-pressed", String(!!pref.loop));
+      };
       paintLoop();
+
       loopBtn.onclick = async () => {
         pref.loop = !pref.loop;
         this.plugin.setSoundPref(file.path, pref);
@@ -131,15 +150,16 @@ export default class SoundboardView extends ItemView {
         paintLoop();
       };
 
-      const stopBtn = controls.createEl("button", { text: "Stop" });
-      stopBtn.classList.add("ttrpg-sb-stop");
+      // 2) Stop-Button
+      const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
       stopBtn.dataset.path = file.path;
       if (this.playing.has(file.path)) stopBtn.classList.add("playing");
       stopBtn.onclick = async () => {
         await this.plugin.engine.stopByFile(file, (pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs));
       };
 
-      const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
+      // 3) Zahnrad: nach rechts schieben, ohne überzustehen
+      const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
       setIcon(gearPerBtn, "gear");
       gearPerBtn.setAttr("aria-label", "Per-title settings");
       gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
