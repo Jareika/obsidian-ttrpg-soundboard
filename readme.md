@@ -1,38 +1,84 @@
-# Obsidian TTRPG Soundboard
+# 🎲 TTRPG Soundboard Plugin
 
-Use Obsidian as a soundboard for your TTRPG sessions. Play multiple sounds at once with per-title loop and fades, a master volume, and a simple tile UI with thumbnails.
+A customizable soundboard plugin for Obsidian — ideal for tabletop RPG sessions, ambient storytelling, or any workflow that benefits from quick-access audio triggers.
 
-Thumbnails: place an image file (png/jpg/jpeg/webp) with the same base name as the sound in the same folder (e.g., dragon.mp3 ? dragon.jpg).
+---
 
-## Features
-- Root folder (default: `Soundbar`), choose subfolders per pane
-- Image tiles (thumbnails), adjustable tile height in Settings (Tile height in px)
-- Per-title loop, volume, and fades (persisted)
-- Stop per title + Stop All
-- Fade in/out (defaults 3000 ms; per-title overrides)
-- Formats: mp3, ogg, wav, m4a (flac may not be supported on iOS)
-- �adjustable tile height in Settings (30�300 px)�.
+## 🔧 Features
 
-## Installation (manual)
-1. Download release assets (manifest.json, main.js, styles.css, versions.json).
-2. Place them in `[Vault]/.obsidian/plugins/obsidian-ttrpg-soundboard/`.
-3. Enable the plugin in Obsidian.
+- **🎛️ Grid-based Soundboard View**  
+  Clickable thumbnails arranged in a grid to trigger sounds visually.
 
-## Usage
-- Ribbon icon or command �Open Soundboard View�
-- Set your root folder in settings; choose subfolder in the pane dropdown
-- Click a tile to play (fade-in). Loop/Stop on each card. Gear button opens per-title settings (loop, per-title volume, fade in/out).
-- Stop All in the toolbar
+- **🎚️ Per-Sound Controls**  
+  Each sound supports:
+  - Loop toggle
+  - Individual volume control
+  - Fade in/out settings  
+  All parameters are saved per sound.
 
-## Development
+- **🛑 Global Controls**  
+  - “Stop All” button to halt all active sounds  
+  - Master volume slider  
+  - Multiple sounds can play simultaneously
 
-npm i
-npm run dev
+- **🎨 Theme Switching**  
+  Dropdown menu to switch between different soundboard themes (based on folder structure).
+
+- **📐 Adjustable Thumbnail Height**  
+  Customize thumbnail size via plugin settings.
+
+---
+
+## 📦 Installation & Setup
+
+1. **Create a Soundboard Root Folder**  
+   Choose or create a folder (e.g., `Soundbar`) where your soundboard themes will live.  
+   Each theme should be a subfolder containing sound files and matching thumbnails.
+
+2. **Configure Plugin Settings**  
+   In the plugin settings, set your chosen folder as the **Root Folder**.  
+   This enables the dropdown theme selector.
+
+3. **Thumbnail Naming Convention**  
+   Thumbnails must have the **same filename** as their corresponding sound file.  
+   Example:  dragon_roar.mp3 dragon_roar.png
+
+4. **Folder Setting (Experimental)**  
+The “Folders” setting is currently under evaluation.  
+It doesn’t interfere with functionality, but its purpose is still being explored.
+
+---
+
+## 🧪 Example Folder Structure
+
+Soundbar/ 
+├── ForestAmbience/ 
+	│ ├── birds.mp3 
+	│ ├── birds.png 
+	│ ├── wind.mp3 
+	│ ├── wind.png 
+├── DungeonCrawl/ 
+	│ ├── footsteps.mp3 
+	│ ├── footsteps.png 
+	│ ├── dripping.mp3 
+	│ ├── dripping.png
 
 
-## Notes
-- iOS/Safari may not decode FLAC; prefer mp3/wav/m4a/ogg for mobile.
-- Playback continues when switching panes. All sounds stop when the plugin is disabled.
+---
 
-## License
-MIT
+## 🗺️ Roadmap
+
+- **Playlist Support (planned)**  
+  Possibly introducing a playlist feature:  
+  If a folder is placed inside a theme folder, it could be treated as a playlist.  
+  This playlist would appear as a single tile inside the theme— with a distinct color, custom buttons, and separate playback settings.
+
+---
+
+## 💬 Feedback
+
+Suggestions for improvement are welcome.  
+Feel free to open an issue or submit a pull request if you have ideas for enhancements or refinements.
+
+---
+
