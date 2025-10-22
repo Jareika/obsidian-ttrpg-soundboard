@@ -11,6 +11,7 @@ export interface PlaybackEvent {
   type: "start" | "stop";
   filePath: string;
   id: string;
+  reason?: "ended" | "stopped"; // ended = natürliches Ende, stopped = manuell/Stop
 }
 
 export class AudioEngine {
@@ -99,7 +100,7 @@ export class AudioEngine {
       const r = this.playing.get(id);
       if (!r || r.stopped) return;
       this.playing.delete(id);
-      this.emit({ type: "stop", filePath: file.path, id });
+      this.emit({ type: "stop", filePath: file.path, id, reason: "ended" });
     };
 
     return {
@@ -124,12 +125,12 @@ export class AudioEngine {
       setTimeout(() => {
         try { rec.source.stop(); } catch {}
         this.playing.delete(id);
-        this.emit({ type: "stop", filePath: rec.file.path, id });
+        this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
       }, Math.max(1, sOpts?.fadeOutMs ?? 0));
     } else {
       try { rec.source.stop(); } catch {}
       this.playing.delete(id);
-      this.emit({ type: "stop", filePath: rec.file.path, id });
+      this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
     }
   }
 

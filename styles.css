@@ -1,8 +1,8 @@
 :root {
   --ttrpg-tile-height: 100px;
   --ttrpg-grid-gap: 16px;
+  --ttrpg-playlist-accent: #d4af37; /* Goldgelb */
 }
-
 
 .ttrpg-sb-grid {
   display: grid;
@@ -17,6 +17,10 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.ttrpg-sb-card.playlist {
+  border-color: var(--ttrpg-playlist-accent);
 }
 
 .ttrpg-sb-title {
@@ -38,6 +42,11 @@
   cursor: pointer;
 }
 .ttrpg-sb-tile:hover { filter: brightness(1.02); }
+
+.ttrpg-sb-tile.playlist {
+  border-color: var(--ttrpg-playlist-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
+}
 
 .ttrpg-sb-btnrow {
   display: flex;
@@ -68,10 +77,9 @@
 /* Stop-Button mit Text: gleich hoch, aber mit horizontaler Polsterung */
 .ttrpg-sb-stop {
   padding: 0 10px;
-  line-height: 1;             /* verhindert Höhenabweichungen durch Text */
+  line-height: 1;
 }
 
-/* Zahnrad sauber an den rechten Rand innerhalb der Reihe schieben */
 .push-right { margin-left: auto; }
 
 /* Loop aktiv sichtbar machen */
@@ -89,7 +97,7 @@
     height: 24px;
     border-radius: 5px;
   }
-  .ttrpg-sb-stop { height: 24px; padding: 0 8px; }  /* Stop-Button passt sich an */
+  .ttrpg-sb-stop { height: 24px; padding: 0 8px; }
   .ttrpg-sb-title { margin-bottom: 0; }
 }
 
@@ -99,14 +107,14 @@
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
 }
-/* Loop-Button als Text: Icon-Basis überschreiben */
+
+/* Loop-Button als Text */
 .ttrpg-sb-loop {
-  width: auto;          /* statt 28px */
-  padding: 0 10px;      /* horizontal etwas Polsterung */
-  line-height: 1;       /* verhindert Höhenabweichungen durch Text */
+  width: auto;
+  padding: 0 10px;
+  line-height: 1;
 }
 
-/* Responsive Tuning für kleinere Displays */
 @media (max-width: 1024px) {
   .ttrpg-sb-loop {
     height: 24px;

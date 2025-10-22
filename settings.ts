@@ -117,7 +117,6 @@ export class SoundboardSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    // Tile height slider: 30–300 px
     new Setting(containerEl)
       .setName("Tile height (px)")
       .setDesc("Adjust thumbnail tile height for the grid.")
@@ -126,7 +125,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.tileHeightPx)
         .onChange(async v => {
           this.plugin.settings.tileHeightPx = v;
-          this.plugin.applyCssVars();        // update CSS variable live
+          this.plugin.applyCssVars();
           await this.plugin.saveSettings();
         }));
   }

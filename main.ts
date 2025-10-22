@@ -2,22 +2,26 @@ import { Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { AudioEngine } from "./audio/AudioEngine";
 import SoundboardView, { VIEW_TYPE_TTRPG_SOUNDBOARD } from "./ui/SoundboardView";
 import { SoundboardSettings, DEFAULT_SETTINGS, SoundboardSettingTab } from "./settings";
-import { findAudioFiles, findAudioFilesUnderRoot, listSubfolders } from "./util/fileDiscovery";
+import { LibraryModel, PlaylistInfo, buildLibrary } from "./util/fileDiscovery";
 
 interface SoundPrefs { loop?: boolean; volume?: number; fadeInMs?: number; fadeOutMs?: number; }
-interface PersistedData { settings?: SoundboardSettings; soundPrefs?: Record<string, SoundPrefs>; }
+interface PlaylistPrefs { loop?: boolean; volume?: number; fadeInMs?: number; fadeOutMs?: number; }
+interface PersistedData {
+  settings?: SoundboardSettings;
+  soundPrefs?: Record<string, SoundPrefs>;
+  playlistPrefs?: Record<string, PlaylistPrefs>;
+}
 
 export default class TTRPGSoundboardPlugin extends Plugin {
   settings: SoundboardSettings;
   soundPrefs: Record<string, SoundPrefs> = {};
+  playlistPrefs: Record<string, PlaylistPrefs> = {};
   engine: AudioEngine;
-  allFiles: TFile[] = [];
-  subfolders: string[] = [];
+  library: LibraryModel = { topFolders: [], byFolder: {}, allSingles: [] };
 
   async onload() {
     await this.loadAll();
 
-    // Apply CSS variables (tile height) on load
     this.applyCssVars();
 
     this.engine = new AudioEngine(this.app);
@@ -31,23 +35,29 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.addRibbonIcon("music", "Open TTRPG Soundboard", () => this.activateView());
     this.addCommand({ id: "open-soundboard-view", name: "Open Soundboard View", callback: () => this.activateView() });
     this.addCommand({ id: "stop-all-sounds", name: "Stop all sounds", callback: () => this.engine.stopAll(this.settings.defaultFadeOutMs) });
-    this.addCommand({ id: "preload-audio", name: "Preload audio buffers", callback: async () => {
-      await this.engine.preload(this.allFiles);
-      new Notice(`Preloaded ${this.allFiles.length} files`);
-    }});
+    this.addCommand({
+      id: "preload-audio",
+      name: "Preload audio buffers",
+      callback: async () => {
+        const files = this.getAllAudioFilesInLibrary();
+        await this.engine.preload(files);
+        new Notice(`Preloaded ${files.length} files`);
+      }
+    });
     this.addCommand({ id: "reload-audio-list", name: "Reload audio list", callback: () => this.rescan() });
 
     this.registerEvent(this.app.vault.on("create", () => this.rescanDebounced()));
     this.registerEvent(this.app.vault.on("delete", () => this.rescanDebounced()));
     this.registerEvent(this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
       if (file instanceof TFile) {
-        const pref = this.soundPrefs[oldPath];
-        if (pref) {
-          this.soundPrefs[file.path] = pref;
+        const sp = this.soundPrefs[oldPath];
+        if (sp) {
+          this.soundPrefs[file.path] = sp;
           delete this.soundPrefs[oldPath];
           this.saveSettings();
         }
       }
+      // Playlist-Prefs: falls Ordner umbenannt wurden, kann man das bei Bedarf später ergänzen.
       this.rescanDebounced();
     }));
 
@@ -58,11 +68,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   onunload() {
     this.engine?.stopAll(0);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
-    // Optional: reset CSS var
-    // document.documentElement.style.removeProperty("--ttrpg-tile-height");
   }
 
-  // NEW: set CSS variable for tile height
+  // CSS-Variable für Kachel-Höhe
   applyCssVars() {
     const h = Math.max(30, Math.min(400, Number(this.settings.tileHeightPx || 100)));
     document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
@@ -81,25 +89,24 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     if (leaf) {
       workspace.revealLeaf(leaf);
       const view = leaf.view as SoundboardView;
-      view.setFiles(this.allFiles);
+      view.setLibrary(this.library);
     }
   }
 
   async rescan() {
-    if (this.settings.rootFolder?.trim()) {
-      this.subfolders = listSubfolders(this.app, this.settings.rootFolder);
-      this.allFiles = findAudioFilesUnderRoot(this.app, this.settings.rootFolder, this.settings.extensions, this.settings.includeRootFiles);
-    } else {
-      this.subfolders = [];
-      this.allFiles = findAudioFiles(this.app, this.settings.folders, this.settings.extensions);
-    }
+    this.library = buildLibrary(this.app, {
+      rootFolder: this.settings.rootFolder,
+      foldersLegacy: this.settings.rootFolder?.trim() ? undefined : this.settings.folders,
+      exts: this.settings.extensions,
+      includeRootFiles: this.settings.includeRootFiles,
+    });
     this.refreshViews();
   }
 
   refreshViews() {
     this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD).forEach(l => {
       const v = l.view as SoundboardView;
-      v.setFiles(this.allFiles);
+      v.setLibrary(this.library);
     });
   }
 
@@ -116,6 +123,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.soundPrefs[path] = pref;
   }
 
+  getPlaylistPref(folderPath: string): PlaylistPrefs {
+    return this.playlistPrefs[folderPath] ?? (this.playlistPrefs[folderPath] = {});
+  }
+  setPlaylistPref(folderPath: string, pref: PlaylistPrefs) {
+    this.playlistPrefs[folderPath] = pref;
+  }
+
   async loadAll() {
     const data = (await this.loadData()) as PersistedData | null;
     if (data?.settings) {
@@ -124,12 +138,27 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, (data as any) ?? {});
     }
     this.soundPrefs = data?.soundPrefs ?? {};
+    this.playlistPrefs = data?.playlistPrefs ?? {};
   }
 
   async saveSettings() {
-    const data: PersistedData = { settings: this.settings, soundPrefs: this.soundPrefs };
+    const data: PersistedData = { settings: this.settings, soundPrefs: this.soundPrefs, playlistPrefs: this.playlistPrefs };
     await this.saveData(data);
-    // Ensure CSS reflects updated settings when called generically
     this.applyCssVars();
+  }
+
+  private getAllAudioFilesInLibrary(): TFile[] {
+    const unique = new Map<string, TFile>();
+    // Singles
+    for (const f of this.library.allSingles) unique.set(f.path, f);
+    // Playlists
+    for (const top of this.library.topFolders) {
+      const fc = this.library.byFolder[top];
+      if (!fc) continue;
+      for (const pl of fc.playlists) {
+        for (const t of pl.tracks) unique.set(t.path, t);
+      }
+    }
+    return [...unique.values()];
   }
 }

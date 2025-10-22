@@ -12,8 +12,8 @@ A customizable soundboard plugin for Obsidian — ideal for tabletop RPG session
 - **🎚️ Per-Sound Controls**  
   Each sound supports:
   - Loop toggle
-  - Individual volume control
-  - Fade in/out settings  
+  - Individual volume control (**Changes to volume do not affect currently playing sounds** – they take effect **only after restarting the sound**)
+  - Fade in/out settings
   All parameters are saved per sound.
 
 - **🛑 Global Controls**  
@@ -66,12 +66,11 @@ Soundbar/
 
 ---
 
-## 🗺️ Roadmap
+## 🎵 (New) Playlist Feature
 
-- **Playlist Support (planned)**  
-  Possibly introducing a playlist feature:  
-  If a folder is placed inside a theme folder, it could be treated as a playlist.  
-  This playlist would appear as a single tile inside the theme— with a distinct color, custom buttons, and separate playback settings.
+- Copy a subfolder into any theme folder. This subfolder will now be treated as a **playlist** and displayed within the theme using a dedicated grid tile.
+- The **playlist name** is derived from the folder name.
+- The **thumbnail** is taken from `cover.jpg` or `cover.png` (if present), otherwise from the **first image file** found in the folder.
 
 ---
 
