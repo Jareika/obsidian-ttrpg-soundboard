@@ -74,6 +74,12 @@ Soundbar/
 
 ---
 
+## Added a Snippet for mobile
+
+- On mobile the button icons were not visible, this snippet helps out
+
+---
+
 ## 💬 Feedback
 
 Suggestions for improvement are welcome.  
