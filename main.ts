@@ -2,7 +2,7 @@ import { Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { AudioEngine } from "./audio/AudioEngine";
 import SoundboardView, { VIEW_TYPE_TTRPG_SOUNDBOARD } from "./ui/SoundboardView";
 import { SoundboardSettings, DEFAULT_SETTINGS, SoundboardSettingTab } from "./settings";
-import { LibraryModel, PlaylistInfo, buildLibrary } from "./util/fileDiscovery";
+import { LibraryModel, buildLibrary } from "./util/fileDiscovery";
 
 interface SoundPrefs { loop?: boolean; volume?: number; fadeInMs?: number; fadeOutMs?: number; }
 interface PlaylistPrefs { loop?: boolean; volume?: number; fadeInMs?: number; fadeOutMs?: number; }
@@ -32,9 +32,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       (leaf: WorkspaceLeaf) => new SoundboardView(leaf, this)
     );
 
-    this.addRibbonIcon("music", "Open TTRPG Soundboard", () => this.activateView());
-    this.addCommand({ id: "open-soundboard-view", name: "Open Soundboard View", callback: () => this.activateView() });
-    this.addCommand({ id: "stop-all-sounds", name: "Stop all sounds", callback: () => this.engine.stopAll(this.settings.defaultFadeOutMs) });
+    this.addRibbonIcon("music", "Open soundboard", () => { void this.activateView(); });
+    this.addCommand({ id: "open-soundboard-view", name: "Open soundboard view", callback: () => { void this.activateView(); } });
+    this.addCommand({ id: "stop-all-sounds", name: "Stop all sounds", callback: () => { void this.engine.stopAll(this.settings.defaultFadeOutMs); } });
     this.addCommand({
       id: "preload-audio",
       name: "Preload audio buffers",
@@ -54,7 +54,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         if (sp) {
           this.soundPrefs[file.path] = sp;
           delete this.soundPrefs[oldPath];
-          this.saveSettings();
+          void this.saveSettings();
         }
       }
       // Playlist-Prefs: falls Ordner umbenannt wurden, kann man das bei Bedarf später ergänzen.
@@ -62,12 +62,12 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }));
 
     this.addSettingTab(new SoundboardSettingTab(this.app, this));
-    await this.rescan();
+    this.rescan();
   }
 
   onunload() {
-    this.engine?.stopAll(0);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
+    void this.engine?.stopAll(0);
+    // Leaves nicht in onunload() detachen, um benutzerdefinierte Positionen zu respektieren.
   }
 
   // CSS-Variable für Kachel-Höhe
@@ -93,7 +93,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
   }
 
-  async rescan() {
+  rescan() {
     this.library = buildLibrary(this.app, {
       rootFolder: this.settings.rootFolder,
       foldersLegacy: this.settings.rootFolder?.trim() ? undefined : this.settings.folders,
@@ -132,11 +132,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   async loadAll() {
     const data = (await this.loadData()) as PersistedData | null;
-    if (data?.settings) {
-      this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
-    } else {
-      this.settings = Object.assign({}, DEFAULT_SETTINGS, (data as any) ?? {});
-    }
+    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.soundPrefs = data?.soundPrefs ?? {};
     this.playlistPrefs = data?.playlistPrefs ?? {};
   }

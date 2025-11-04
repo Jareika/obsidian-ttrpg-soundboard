@@ -1,0 +1,32 @@
+/* TTRPG Soundboard – Mobile Icon-Fix: schmale Buttons + sichtbare SVGs */
+
+/* Button-Zeile darf bei Engstellen umbrechen */
+body.is-mobile .ttrpg-sb-btnrow,
+body.is-phone .ttrpg-sb-btnrow,
+body.is-tablet .ttrpg-sb-btnrow {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Icon-Buttons: schmal, Höhe anpassen, Breite per width steuerbar */
+body.is-mobile .ttrpg-sb-icon-btn,
+body.is-phone .ttrpg-sb-icon-btn,
+body.is-tablet .ttrpg-sb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 35px;     /* hier schmaler/ breiter einstellen */
+  height: 28px;    /* Button-Höhe */
+  padding: 0;
+  box-sizing: border-box;
+  flex: 0 0 auto;  /* WICHTIG: lässt width wieder gelten (statt fix 28px) */
+}
+
+/* SVG-Größe festlegen und sauber zentrieren */
+body.is-mobile .ttrpg-sb-icon-btn svg,
+body.is-phone .ttrpg-sb-icon-btn svg,
+body.is-tablet .ttrpg-sb-icon-btn svg {
+  width: 18px !important;   /* Icon-Größe */
+  height: 18px !important;
+  display: block;           /* verhindert zusätzlichen Inline-Spacing */
+}

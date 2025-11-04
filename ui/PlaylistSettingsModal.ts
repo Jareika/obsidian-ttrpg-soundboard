@@ -23,7 +23,7 @@ export class PlaylistSettingsModal extends Modal {
     let loop = !!pref.loop;
 
     new Setting(contentEl)
-      .setName("Fade-In (ms)")
+      .setName("Fade-in (ms)")
       .setDesc("Leer lassen, um den globalen Standard zu verwenden.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeInMs))
@@ -31,7 +31,7 @@ export class PlaylistSettingsModal extends Modal {
         .onChange(v => { fadeInStr = v; }));
 
     new Setting(contentEl)
-      .setName("Fade-Out (ms)")
+      .setName("Fade-out (ms)")
       .setDesc("Leer lassen, um den globalen Standard zu verwenden.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeOutMs))

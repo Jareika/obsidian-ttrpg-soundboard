@@ -1,4 +1,4 @@
-import { App, TAbstractFile, TFile, TFolder } from "obsidian";
+import { App, TFile, TFolder } from "obsidian";
 
 export const IMG_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 

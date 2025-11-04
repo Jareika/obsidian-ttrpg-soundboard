@@ -31,10 +31,10 @@ export default class SoundboardView extends ItemView {
   }
 
   getViewType() { return VIEW_TYPE_TTRPG_SOUNDBOARD; }
-  getDisplayText() { return "TTRPG Soundboard"; }
+  getDisplayText() { return "TTRPG soundboard"; }
   getIcon() { return "music"; }
 
-  async onOpen() {
+  onOpen() {
     this.playingFiles = new Set(this.plugin.engine.getPlayingFilePaths());
     this.unsubEngine = this.plugin.engine.on(e => {
       if (e.type === "start") {
@@ -45,7 +45,7 @@ export default class SoundboardView extends ItemView {
         if (e.reason === "ended") {
           const pPath = this.playIdToPlaylist.get(e.id);
           if (pPath) {
-            this.onTrackEndedNaturally(pPath);
+            void this.onTrackEndedNaturally(pPath);
           }
         }
         // id-Mapping aufräumen
@@ -56,10 +56,10 @@ export default class SoundboardView extends ItemView {
     this.render();
   }
 
-  async onClose() { this.unsubEngine?.(); this.unsubEngine = undefined; }
+  onClose() { this.unsubEngine?.(); this.unsubEngine = undefined; }
 
   getState(): ViewState { return { ...this.state }; }
-  async setState(state: ViewState) { this.state = { ...state }; await this.render(); }
+  async setState(state: ViewState) { this.state = { ...state }; this.render(); }
 
   setLibrary(library: LibraryModel) { this.library = library; this.render(); }
 
@@ -94,8 +94,8 @@ export default class SoundboardView extends ItemView {
       this.render();
     };
 
-    const stopAllBtn = toolbar.createEl("button", { text: "Stop All" });
-    stopAllBtn.onclick = () => this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
+    const stopAllBtn = toolbar.createEl("button", { text: "Stop all" });
+    stopAllBtn.onclick = () => { void this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs); };
 
     const volInput = toolbar.createEl("input", { type: "range" });
     volInput.min = "0"; volInput.max = "1"; volInput.step = "0.01";
@@ -104,7 +104,7 @@ export default class SoundboardView extends ItemView {
       const v = Number(volInput.value);
       this.plugin.settings.masterVolume = v;
       this.plugin.engine.setMasterVolume(v);
-      this.plugin.saveSettings();
+      void this.plugin.saveSettings();
     };
 
     // Grid
@@ -171,9 +171,9 @@ export default class SoundboardView extends ItemView {
 
     const loopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
-      text: "Loop",
       attr: { "aria-label": "Toggle loop", "aria-pressed": String(!!pref.loop), "type": "button" }
     });
+    setIcon(loopBtn, "repeat");
     const paintLoop = () => {
       loopBtn.toggleClass("active", !!pref.loop);
       loopBtn.setAttr("aria-pressed", String(!!pref.loop));
@@ -220,7 +220,7 @@ export default class SoundboardView extends ItemView {
     const tile = card.createEl("button", { cls: "ttrpg-sb-tile playlist", attr: { "aria-label": pl.name } });
     if (pl.cover) tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(pl.cover)})`;
 
-    tile.onclick = () => this.startPlaylist(pl, 0);
+    tile.onclick = () => { void this.startPlaylist(pl, 0); };
 
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
@@ -228,18 +228,18 @@ export default class SoundboardView extends ItemView {
     const prevBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Vorheriger Titel");
-    prevBtn.onclick = () => this.prevInPlaylist(pl);
+    prevBtn.onclick = () => { void this.prevInPlaylist(pl); };
 
     // Stop
     const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.playlist = pl.path;
-    stopBtn.onclick = () => this.stopPlaylist(pl);
+    stopBtn.onclick = () => { void this.stopPlaylist(pl); };
 
     // Next
     const nextBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Nächster Titel");
-    nextBtn.onclick = () => this.nextInPlaylist(pl);
+    nextBtn.onclick = () => { void this.nextInPlaylist(pl); };
 
     // Gear
     const gearBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
@@ -268,7 +268,7 @@ export default class SoundboardView extends ItemView {
 
     // Falls aktuell was läuft: erst stoppen, dann starten
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch {}
+      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -299,7 +299,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch {}
+      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
       st.handle = undefined;
     }
     st.active = false;
@@ -313,7 +313,7 @@ export default class SoundboardView extends ItemView {
 
     // Wenn aktiv, aktuellen Titel stoppen, dann nächsten starten
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch {}
+      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -327,7 +327,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch {}
+      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 

@@ -14,6 +14,8 @@ export interface PlaybackEvent {
   reason?: "ended" | "stopped"; // ended = natürliches Ende, stopped = manuell/Stop
 }
 
+type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
+
 export class AudioEngine {
   private app: App;
   private ctx: AudioContext | null = null;
@@ -26,7 +28,7 @@ export class AudioEngine {
   constructor(app: App) { this.app = app; }
 
   on(cb: (e: PlaybackEvent) => void) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
-  private emit(e: PlaybackEvent) { this.listeners.forEach(fn => { try { fn(e); } catch {} }); }
+  private emit(e: PlaybackEvent) { this.listeners.forEach(fn => { try { fn(e); } catch (err) { /* ignore listener error */ } }); }
 
   setMasterVolume(v: number) {
     this.masterVolume = Math.max(0, Math.min(1, v));
@@ -37,14 +39,16 @@ export class AudioEngine {
 
   async ensureContext() {
     if (!this.ctx) {
-      const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
+      const w = window as WindowWithWebAudio;
+      const Ctx = (window.AudioContext ?? w.webkitAudioContext) as typeof AudioContext | undefined;
+      if (!Ctx) throw new Error("Web Audio API not available");
       this.ctx = new Ctx();
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = this.masterVolume;
       this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") {
-      try { await this.ctx.resume(); } catch {}
+      try { await this.ctx.resume(); } catch (e) { /* ignore resume error */ }
     }
   }
 
@@ -58,6 +62,7 @@ export class AudioEngine {
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+      // slice(0) — sicheres, kopiertes ArrayBuffer für iOS/Safari
       ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     this.buffers.set(key, audioBuffer);
@@ -105,33 +110,37 @@ export class AudioEngine {
 
     return {
       id,
-      stop: async (sOpts?: StopOptions) => this.stopById(id, sOpts),
+      stop: (sOpts?: StopOptions) => this.stopById(id, sOpts),
     };
   }
 
-  private async stopById(id: string, sOpts?: StopOptions) {
+  private stopById(id: string, sOpts?: StopOptions): Promise<void> {
     const rec = this.playing.get(id);
-    if (!rec || rec.stopped) return;
+    if (!rec || rec.stopped) return Promise.resolve();
     rec.stopped = true;
     const ctx = this.ctx!;
     const fadeOut = ((sOpts?.fadeOutMs ?? 0) / 1000);
     const n = ctx.currentTime;
 
-    if (fadeOut > 0) {
-      rec.gain.gain.cancelScheduledValues(n);
-      const cur = rec.gain.gain.value;
-      rec.gain.gain.setValueAtTime(cur, n);
-      rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
-      setTimeout(() => {
-        try { rec.source.stop(); } catch {}
+    return new Promise<void>((resolve) => {
+      if (fadeOut > 0) {
+        rec.gain.gain.cancelScheduledValues(n);
+        const cur = rec.gain.gain.value;
+        rec.gain.gain.setValueAtTime(cur, n);
+        rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
+        window.setTimeout(() => {
+          try { rec.source.stop(); } catch (e) { /* ignore stop error */ }
+          this.playing.delete(id);
+          this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
+          resolve();
+        }, Math.max(1, sOpts?.fadeOutMs ?? 0));
+      } else {
+        try { rec.source.stop(); } catch (e) { /* ignore stop error */ }
         this.playing.delete(id);
         this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
-      }, Math.max(1, sOpts?.fadeOutMs ?? 0));
-    } else {
-      try { rec.source.stop(); } catch {}
-      this.playing.delete(id);
-      this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
-    }
+        resolve();
+      }
+    });
   }
 
   async stopByFile(file: TFile, fadeOutMs = 0) {
