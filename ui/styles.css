@@ -1,0 +1,109 @@
+:root {
+  --ttrpg-tile-height: 100px;
+  --ttrpg-grid-gap: 16px;
+  --ttrpg-playlist-accent: #d4af37; /* Goldgelb */
+}
+
+.ttrpg-sb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--ttrpg-grid-gap, 10px);
+}
+
+.ttrpg-sb-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ttrpg-sb-card.playlist {
+  border-color: var(--ttrpg-playlist-accent);
+}
+
+.ttrpg-sb-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.ttrpg-sb-tile {
+  position: relative;
+  width: 100%;
+  height: var(--ttrpg-tile-height, 220px);
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--background-modifier-form-field), var(--background-secondary));
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+.ttrpg-sb-tile:hover { filter: brightness(1.02); }
+
+.ttrpg-sb-tile.playlist {
+  border-color: var(--ttrpg-playlist-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
+}
+
+.ttrpg-sb-btnrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Einheitliche Button-Grundwerte für Icon- und Stop-Buttons */
+.ttrpg-sb-icon-btn,
+.ttrpg-sb-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+
+/* Icon-Buttons quadratisch */
+.ttrpg-sb-icon-btn {
+  width: 28px;
+  padding: 0;
+}
+
+/* Stop-Button mit Text: gleich hoch, aber mit horizontaler Polsterung */
+.ttrpg-sb-stop {
+  padding: 0 10px;
+  line-height: 1;
+}
+
+.push-right { margin-left: auto; }
+
+/* Loop aktiv sichtbar machen */
+.ttrpg-sb-loop.active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* Tablet-Tuning */
+@media (max-width: 1024px) {
+  .ttrpg-sb-btnrow { gap: 6px; }
+  .ttrpg-sb-icon-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+  }
+  .ttrpg-sb-stop { height: 24px; padding: 0 8px; }
+  .ttrpg-sb-title { margin-bottom: 0; }
+}
+
+/* Stop-Button, wenn ein Titel spielt */
+.ttrpg-sb-stop.playing {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
