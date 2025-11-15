@@ -12,6 +12,10 @@ interface PersistedData {
   playlistPrefs?: Record<string, PlaylistPrefs>;
 }
 
+function hasSetLibrary(v: unknown): v is { setLibrary: (lib: LibraryModel) => void } {
+  return !!v && typeof v === "object" && typeof (v as Record<string, unknown>)["setLibrary"] === "function";
+}
+
 export default class TTRPGSoundboardPlugin extends Plugin {
   settings: SoundboardSettings;
   soundPrefs: Record<string, SoundPrefs> = {};
@@ -89,7 +93,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       await leaf?.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, active: true });
     }
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      // Intendiert ignoriert (UI), zur Linter-Beruhigung mit void markiert
+      void workspace.revealLeaf(leaf);
       // Robust: alte View-Instanzen nach Reload neu binden
       await this.rebindLeafIfNeeded(leaf);
     }
@@ -114,17 +119,17 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   }
 
   private async rebindLeafIfNeeded(leaf: WorkspaceLeaf): Promise<void> {
-    const vAny: any = leaf.view;
-    if (vAny && typeof vAny.setLibrary === "function") {
-      vAny.setLibrary(this.library);
+    const view1 = leaf.view;
+    if (hasSetLibrary(view1)) {
+      view1.setLibrary(this.library);
       return;
     }
     try {
       // View neu initialisieren, damit die aktuelle Klassen-Version geladen wird
       await leaf.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, active: true });
-      const vAny2: any = leaf.view;
-      if (vAny2 && typeof vAny2.setLibrary === "function") {
-        vAny2.setLibrary(this.library);
+      const view2 = leaf.view;
+      if (hasSetLibrary(view2)) {
+        view2.setLibrary(this.library);
       }
     } catch (err) {
       console.warn("TTRPG Soundboard: Konnte View nicht neu binden:", err);
@@ -137,14 +142,14 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.rescanTimer = window.setTimeout(() => this.rescan(), delay);
   }
 
-  getSoundPref(path: string): Record<string, unknown> {
+  getSoundPref(path: string): SoundPrefs {
     return this.soundPrefs[path] ?? (this.soundPrefs[path] = {});
   }
   setSoundPref(path: string, pref: SoundPrefs) {
     this.soundPrefs[path] = pref;
   }
 
-  getPlaylistPref(folderPath: string): Record<string, unknown> {
+  getPlaylistPref(folderPath: string): PlaylistPrefs {
     return this.playlistPrefs[folderPath] ?? (this.playlistPrefs[folderPath] = {});
   }
   setPlaylistPref(folderPath: string, pref: PlaylistPrefs) {

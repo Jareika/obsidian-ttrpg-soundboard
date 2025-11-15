@@ -9,7 +9,7 @@ export class PerSoundSettingsModal extends Modal {
     super(app);
     this.plugin = plugin;
     this.filePath = filePath;
-    this.titleEl.setText("Title settings");
+    this.titleEl.setText("Sound settings");
   }
 
   onOpen(): void {
@@ -17,9 +17,9 @@ export class PerSoundSettingsModal extends Modal {
     contentEl.empty();
 
     const pref = this.plugin.getSoundPref(this.filePath);
-    let fadeInStr = pref.fadeInMs != null ? String(pref.fadeInMs) : "";
-    let fadeOutStr = pref.fadeOutMs != null ? String(pref.fadeOutMs) : "";
-    let vol = pref.volume ?? 1;
+    let fadeInStr = typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
+    let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
+    let vol = typeof pref.volume === "number" ? pref.volume : 1;
     let loop = !!pref.loop;
 
     new Setting(contentEl)

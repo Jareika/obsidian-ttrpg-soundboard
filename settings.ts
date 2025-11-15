@@ -33,8 +33,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    // Keine Plugin-Namen in Überschriften – generische Section-Überschrift
     new Setting(containerEl)
-      .setName("TTRPG soundboard")
+      .setName("General")
       .setHeading();
 
     new Setting(containerEl)

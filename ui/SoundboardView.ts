@@ -31,7 +31,7 @@ export default class SoundboardView extends ItemView {
   }
 
   getViewType() { return VIEW_TYPE_TTRPG_SOUNDBOARD; }
-  getDisplayText() { return "TTRPG soundboard"; }
+  getDisplayText() { return "Soundboard"; }
   getIcon() { return "music"; }
 
   onOpen() {
@@ -59,7 +59,12 @@ export default class SoundboardView extends ItemView {
   onClose() { this.unsubEngine?.(); this.unsubEngine = undefined; }
 
   getState(): ViewState { return { ...this.state }; }
-  async setState(state: ViewState) { this.state = { ...state }; this.render(); }
+  async setState(state: ViewState) {
+    this.state = { ...state };
+    this.render();
+    // Linter: async-Methode enthält nun ein await
+    await Promise.resolve();
+  }
 
   setLibrary(library: LibraryModel) { this.library = library; this.render(); }
 
@@ -268,7 +273,7 @@ export default class SoundboardView extends ItemView {
 
     // Falls aktuell was läuft: erst stoppen, dann starten
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -299,7 +304,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
       st.handle = undefined;
     }
     st.active = false;
@@ -313,7 +318,7 @@ export default class SoundboardView extends ItemView {
 
     // Wenn aktiv, aktuellen Titel stoppen, dann nächsten starten
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -327,7 +332,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
       st.handle = undefined;
     }
 
