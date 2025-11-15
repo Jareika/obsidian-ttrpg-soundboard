@@ -61,7 +61,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Folders (legacy, comma separated)")
-      .setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX.")
+      .setDesc("Used only when the root folder is empty.")
       .addText(ti => ti
         .setValue(this.plugin.settings.folders.join(", "))
         .onChange(v => {

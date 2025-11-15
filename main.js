@@ -660,7 +660,7 @@ var SoundboardSettingTab = class extends import_obsidian4.PluginSettingTab {
       void this.plugin.saveSettings();
       this.plugin.rescan();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Folders (legacy, comma separated)").setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX.").addText((ti) => ti.setValue(this.plugin.settings.folders.join(", ")).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Folders (legacy, comma separated)").setDesc("Used only when the root folder is empty.").addText((ti) => ti.setValue(this.plugin.settings.folders.join(", ")).onChange((v) => {
       this.plugin.settings.folders = v.split(",").map((s) => s.trim()).filter(Boolean);
       void this.plugin.saveSettings();
       this.plugin.rescan();

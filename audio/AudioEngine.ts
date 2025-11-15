@@ -66,7 +66,6 @@ export class AudioEngine {
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      // slice(0) — sicheres, kopiertes ArrayBuffer für iOS/Safari
       ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     this.buffers.set(key, audioBuffer);
