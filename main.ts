@@ -57,17 +57,19 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           void this.saveSettings();
         }
       }
-      // Playlist-Prefs: falls Ordner umbenannt wurden, kann man das bei Bedarf später ergänzen.
+      // Playlist-Prefs bei Ordner-Umbenennung ggf. später ergänzen
       this.rescanDebounced();
     }));
 
     this.addSettingTab(new SoundboardSettingTab(this.app, this));
+
+    // Erstaufbau
     this.rescan();
   }
 
   onunload() {
     void this.engine?.stopAll(0);
-    // Leaves nicht in onunload() detachen, um benutzerdefinierte Positionen zu respektieren.
+    // Leaves absichtlich NICHT detachen, Layout bleibt erhalten.
   }
 
   // CSS-Variable für Kachel-Höhe
@@ -88,8 +90,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
     if (leaf) {
       workspace.revealLeaf(leaf);
-      const view = leaf.view as SoundboardView;
-      view.setLibrary(this.library);
+      // Robust: alte View-Instanzen nach Reload neu binden
+      await this.rebindLeafIfNeeded(leaf);
     }
   }
 
@@ -104,10 +106,29 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   }
 
   refreshViews() {
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD).forEach(l => {
-      const v = l.view as SoundboardView;
-      v.setLibrary(this.library);
-    });
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
+    for (const leaf of leaves) {
+      // Keine Exceptions mehr: wenn setLibrary fehlt, Leaf re-initialisieren
+      void this.rebindLeafIfNeeded(leaf);
+    }
+  }
+
+  private async rebindLeafIfNeeded(leaf: WorkspaceLeaf): Promise<void> {
+    const vAny: any = leaf.view;
+    if (vAny && typeof vAny.setLibrary === "function") {
+      vAny.setLibrary(this.library);
+      return;
+    }
+    try {
+      // View neu initialisieren, damit die aktuelle Klassen-Version geladen wird
+      await leaf.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, active: true });
+      const vAny2: any = leaf.view;
+      if (vAny2 && typeof vAny2.setLibrary === "function") {
+        vAny2.setLibrary(this.library);
+      }
+    } catch (err) {
+      console.warn("TTRPG Soundboard: Konnte View nicht neu binden:", err);
+    }
   }
 
   private rescanTimer: number | null = null;
@@ -116,14 +137,14 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.rescanTimer = window.setTimeout(() => this.rescan(), delay);
   }
 
-  getSoundPref(path: string): SoundPrefs {
+  getSoundPref(path: string): Record<string, unknown> {
     return this.soundPrefs[path] ?? (this.soundPrefs[path] = {});
   }
   setSoundPref(path: string, pref: SoundPrefs) {
     this.soundPrefs[path] = pref;
   }
 
-  getPlaylistPref(folderPath: string): PlaylistPrefs {
+  getPlaylistPref(folderPath: string): Record<string, unknown> {
     return this.playlistPrefs[folderPath] ?? (this.playlistPrefs[folderPath] = {});
   }
   setPlaylistPref(folderPath: string, pref: PlaylistPrefs) {

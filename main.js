@@ -879,8 +879,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian6.Plugin {
     }
     if (leaf) {
       workspace.revealLeaf(leaf);
-      const view = leaf.view;
-      view.setLibrary(this.library);
+      await this.rebindLeafIfNeeded(leaf);
     }
   }
   rescan() {
@@ -893,10 +892,26 @@ var TTRPGSoundboardPlugin = class extends import_obsidian6.Plugin {
     this.refreshViews();
   }
   refreshViews() {
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD).forEach((l) => {
-      const v = l.view;
-      v.setLibrary(this.library);
-    });
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
+    for (const leaf of leaves) {
+      void this.rebindLeafIfNeeded(leaf);
+    }
+  }
+  async rebindLeafIfNeeded(leaf) {
+    const vAny = leaf.view;
+    if (vAny && typeof vAny.setLibrary === "function") {
+      vAny.setLibrary(this.library);
+      return;
+    }
+    try {
+      await leaf.setViewState({ type: VIEW_TYPE_TTRPG_SOUNDBOARD, active: true });
+      const vAny2 = leaf.view;
+      if (vAny2 && typeof vAny2.setLibrary === "function") {
+        vAny2.setLibrary(this.library);
+      }
+    } catch (err) {
+      console.warn("TTRPG Soundboard: Konnte View nicht neu binden:", err);
+    }
   }
   rescanDebounced(delay = 300) {
     if (this.rescanTimer) window.clearTimeout(this.rescanTimer);
