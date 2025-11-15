@@ -650,7 +650,7 @@ var SoundboardSettingTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian4.Setting(containerEl).setName("Library").setHeading();
-    new import_obsidian4.Setting(containerEl).setName("Root folder").setDesc("Only subfolders under this folder are listed as options. Example: Soundbar.").addText((ti) => ti.setPlaceholder("Soundbar").setValue(this.plugin.settings.rootFolder).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Root folder").setDesc("Only subfolders under this folder are listed as options. Example: soundbar.").addText((ti) => ti.setPlaceholder("Soundbar").setValue(this.plugin.settings.rootFolder).onChange((v) => {
       this.plugin.settings.rootFolder = v.trim();
       void this.plugin.saveSettings();
       this.plugin.rescan();

@@ -38,7 +38,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Root folder")
-      .setDesc("Only subfolders under this folder are listed as options. Example: Soundbar.")
+      .setDesc("Only subfolders under this folder are listed as options. Example: soundbar.")
       .addText(ti => ti
         .setPlaceholder("Soundbar")
         .setValue(this.plugin.settings.rootFolder)
