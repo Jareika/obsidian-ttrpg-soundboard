@@ -23,16 +23,16 @@ export class PlaylistSettingsModal extends Modal {
     let loop = !!pref.loop;
 
     new Setting(contentEl)
-      .setName("Fade-in (ms)")
-      .setDesc("Leer lassen, um den globalen Standard zu verwenden.")
+      .setName("Fade in (ms)")
+      .setDesc("Leave empty to use the global default.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeInMs))
         .setValue(fadeInStr)
         .onChange(v => { fadeInStr = v; }));
 
     new Setting(contentEl)
-      .setName("Fade-out (ms)")
-      .setDesc("Leer lassen, um den globalen Standard zu verwenden.")
+      .setName("Fade out (ms)")
+      .setDesc("Leave empty to use the global default.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeOutMs))
         .setValue(fadeOutStr)
@@ -40,7 +40,7 @@ export class PlaylistSettingsModal extends Modal {
 
     new Setting(contentEl)
       .setName("Volume")
-      .setDesc("0–1, wird mit der Master-Lautstärke multipliziert.")
+      .setDesc("0–1, multiplied by master volume.")
       .addSlider(s => s
         .setLimits(0, 1, 0.01)
         .setValue(vol)
@@ -48,7 +48,7 @@ export class PlaylistSettingsModal extends Modal {
       );
 
     new Setting(contentEl)
-      .setName("Loop (gesamte Playlist)")
+      .setName("Loop playlist")
       .addToggle(tg => tg.setValue(loop).onChange(v => { loop = v; }));
 
     new Setting(contentEl)

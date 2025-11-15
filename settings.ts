@@ -33,14 +33,12 @@ export class SoundboardSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // Keine Plugin-Namen in Überschriften – generische Section-Überschrift
-    new Setting(containerEl)
-      .setName("General")
-      .setHeading();
+    // Library
+    new Setting(containerEl).setName("Library").setHeading();
 
     new Setting(containerEl)
       .setName("Root folder")
-      .setDesc("Only subfolders under this folder are listed as options. Example: Soundbar")
+      .setDesc("Only subfolders under this folder are listed as options. Example: Soundbar.")
       .addText(ti => ti
         .setPlaceholder("Soundbar")
         .setValue(this.plugin.settings.rootFolder)
@@ -62,8 +60,8 @@ export class SoundboardSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Folders (legacy, comma-separated)")
-      .setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX")
+      .setName("Folders (legacy, comma separated)")
+      .setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX.")
       .addText(ti => ti
         .setValue(this.plugin.settings.folders.join(", "))
         .onChange(v => {
@@ -74,7 +72,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Allowed extensions")
-      .setDesc("Comma-separated, e.g. mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).")
+      .setDesc("Comma separated, e.g., mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).")
       .addText(ti => ti
         .setValue(this.plugin.settings.extensions.join(", "))
         .onChange(v => {
@@ -83,8 +81,11 @@ export class SoundboardSettingTab extends PluginSettingTab {
           this.plugin.rescan();
         }));
 
+    // Playback
+    new Setting(containerEl).setName("Playback").setHeading();
+
     new Setting(containerEl)
-      .setName("Fade-in (ms)")
+      .setName("Fade in (ms)")
       .addText(ti => ti
         .setValue(String(this.plugin.settings.defaultFadeInMs))
         .onChange(v => {
@@ -93,7 +94,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Fade-out (ms)")
+      .setName("Fade out (ms)")
       .addText(ti => ti
         .setValue(String(this.plugin.settings.defaultFadeOutMs))
         .onChange(v => {
@@ -121,6 +122,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
           this.plugin.engine?.setMasterVolume(v);
           void this.plugin.saveSettings();
         }));
+
+    // Appearance
+    new Setting(containerEl).setName("Appearance").setHeading();
 
     new Setting(containerEl)
       .setName("Tile height (px)")

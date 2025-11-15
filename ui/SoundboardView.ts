@@ -21,7 +21,7 @@ export default class SoundboardView extends ItemView {
   playingFiles = new Set<string>();
   private unsubEngine?: () => void;
 
-  // Playlist-Laufzeitstatus pro Playlist-Ordner
+  // Runtime status per playlist folder
   private playlistStates = new Map<string, PlaylistPlayState>();
   private playIdToPlaylist = new Map<string, string>(); // id -> playlistPath
 
@@ -41,14 +41,14 @@ export default class SoundboardView extends ItemView {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
-        // Playlist-Autoweiter nur bei natürlichem Ende
+        // Playlist auto-advance only on natural end
         if (e.reason === "ended") {
           const pPath = this.playIdToPlaylist.get(e.id);
           if (pPath) {
             void this.onTrackEndedNaturally(pPath);
           }
         }
-        // id-Mapping aufräumen
+        // Cleanup id mapping
         if (e.id) this.playIdToPlaylist.delete(e.id);
       }
       this.updatePlayingVisuals();
@@ -62,7 +62,6 @@ export default class SoundboardView extends ItemView {
   async setState(state: ViewState) {
     this.state = { ...state };
     this.render();
-    // Linter: async-Methode enthält nun ein await
     await Promise.resolve();
   }
 
@@ -84,7 +83,7 @@ export default class SoundboardView extends ItemView {
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
 
     const folderSelect = toolbar.createEl("select");
-    folderSelect.createEl("option", { text: "Alle Ordner", value: "" });
+    folderSelect.createEl("option", { text: "All folders", value: "" });
     const topFolders = this.library?.topFolders ?? [];
     for (const f of topFolders) {
       const label = this.library?.rootFolder
@@ -116,13 +115,13 @@ export default class SoundboardView extends ItemView {
     const grid = contentEl.createDiv({ cls: "ttrpg-sb-grid" });
 
     if (!this.library) {
-      grid.createDiv({ text: "Keine Dateien gefunden. Prüfe die Einstellungen." });
+      grid.createDiv({ text: "No files found. Check settings." });
       return;
     }
 
     const folder = this.state.folder ?? "";
     if (!folder) {
-      // "Alle Ordner": Nur Singles (ohne Inhalte aus Playlists)
+      // "All folders": singles only (no playlist contents)
       for (const file of this.library.allSingles) {
         this.renderSingleCard(grid, file);
       }
@@ -132,16 +131,16 @@ export default class SoundboardView extends ItemView {
 
     const content = this.library.byFolder[folder];
     if (!content) {
-      grid.createDiv({ text: "Ordner-Inhalt nicht gefunden." });
+      grid.createDiv({ text: "Folder contents not found." });
       return;
     }
 
-    // 1) Normale Dateien im gewählten Top-Level-Ordner
+    // 1) Singles in the selected top-level folder
     for (const file of content.files) {
       this.renderSingleCard(grid, file);
     }
 
-    // 2) Playlists (Unterordner)
+    // 2) Playlists (subfolders)
     for (const pl of content.playlists) {
       this.renderPlaylistCard(grid, pl);
     }
@@ -201,7 +200,7 @@ export default class SoundboardView extends ItemView {
 
     const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     setIcon(gearPerBtn, "gear");
-    gearPerBtn.setAttr("aria-label", "Per-title settings");
+    gearPerBtn.setAttr("aria-label", "Sound settings");
     gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
   }
 
@@ -229,10 +228,10 @@ export default class SoundboardView extends ItemView {
 
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
-    // Prev
+    // Previous
     const prevBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(prevBtn, "skip-back");
-    prevBtn.setAttr("aria-label", "Vorheriger Titel");
+    prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => { void this.prevInPlaylist(pl); };
 
     // Stop
@@ -243,7 +242,7 @@ export default class SoundboardView extends ItemView {
     // Next
     const nextBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(nextBtn, "skip-forward");
-    nextBtn.setAttr("aria-label", "Nächster Titel");
+    nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => { void this.nextInPlaylist(pl); };
 
     // Gear
@@ -252,7 +251,7 @@ export default class SoundboardView extends ItemView {
     gearBtn.setAttr("aria-label", "Playlist settings");
     gearBtn.onclick = () => new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
 
-    // Playing-Status visualisieren
+    // Visualize playing state
     const st = this.ensurePlaylistState(pl.path);
     if (st.active) stopBtn.classList.add("playing");
   }
@@ -271,9 +270,9 @@ export default class SoundboardView extends ItemView {
     const pref = this.plugin.getPlaylistPref(pl.path);
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
-    // Falls aktuell was läuft: erst stoppen, dann starten
+    // If something is playing: stop first, then start
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -304,7 +303,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch { /* ignore stop error */ }
       st.handle = undefined;
     }
     st.active = false;
@@ -316,9 +315,8 @@ export default class SoundboardView extends ItemView {
     const pref = this.plugin.getPlaylistPref(pl.path);
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
-    // Wenn aktiv, aktuellen Titel stoppen, dann nächsten starten
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -332,7 +330,7 @@ export default class SoundboardView extends ItemView {
     const fadeOutMs = pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
 
     if (st.handle) {
-      try { await st.handle.stop({ fadeOutMs }); } catch (_e) { /* ignore stop error */ }
+      try { await st.handle.stop({ fadeOutMs }); } catch { /* ignore stop error */ }
       st.handle = undefined;
     }
 
@@ -352,7 +350,7 @@ export default class SoundboardView extends ItemView {
       if (pref.loop) {
         await this.playPlaylistIndex(pl, 0);
       } else {
-        // Playlist fertig
+        // Playlist finished
         st.handle = undefined;
         st.active = false;
         this.updatePlayingVisuals();

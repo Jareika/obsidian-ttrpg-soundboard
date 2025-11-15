@@ -23,16 +23,16 @@ export class PerSoundSettingsModal extends Modal {
     let loop = !!pref.loop;
 
     new Setting(contentEl)
-      .setName("Fade-in (ms)")
-      .setDesc("Leave empty to use global default.")
+      .setName("Fade in (ms)")
+      .setDesc("Leave empty to use the global default.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeInMs))
         .setValue(fadeInStr)
         .onChange(v => { fadeInStr = v; }));
 
     new Setting(contentEl)
-      .setName("Fade-out (ms)")
-      .setDesc("Leave empty to use global default.")
+      .setName("Fade out (ms)")
+      .setDesc("Leave empty to use the global default.")
       .addText(ti => ti
         .setPlaceholder(String(this.plugin.settings.defaultFadeOutMs))
         .setValue(fadeOutStr)

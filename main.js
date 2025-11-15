@@ -44,7 +44,7 @@ var AudioEngine = class {
     this.listeners.forEach((fn) => {
       try {
         void fn(e);
-      } catch (_err) {
+      } catch {
       }
     });
   }
@@ -67,7 +67,7 @@ var AudioEngine = class {
     if (this.ctx.state === "suspended") {
       try {
         await this.ctx.resume();
-      } catch (_e) {
+      } catch {
       }
     }
   }
@@ -136,7 +136,7 @@ var AudioEngine = class {
         window.setTimeout(() => {
           try {
             rec.source.stop();
-          } catch (_e) {
+          } catch {
           }
           this.playing.delete(id);
           this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
@@ -145,7 +145,7 @@ var AudioEngine = class {
       } else {
         try {
           rec.source.stop();
-        } catch (_e) {
+        } catch {
         }
         this.playing.delete(id);
         this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
@@ -197,10 +197,10 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
     let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
     let vol = typeof pref.volume === "number" ? pref.volume : 1;
     let loop = !!pref.loop;
-    new import_obsidian.Setting(contentEl).setName("Fade-in (ms)").setDesc("Leave empty to use global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
+    new import_obsidian.Setting(contentEl).setName("Fade in (ms)").setDesc("Leave empty to use the global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
       fadeInStr = v;
     }));
-    new import_obsidian.Setting(contentEl).setName("Fade-out (ms)").setDesc("Leave empty to use global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeOutMs)).setValue(fadeOutStr).onChange((v) => {
+    new import_obsidian.Setting(contentEl).setName("Fade out (ms)").setDesc("Leave empty to use the global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeOutMs)).setValue(fadeOutStr).onChange((v) => {
       fadeOutStr = v;
     }));
     new import_obsidian.Setting(contentEl).setName("Volume").setDesc("0\u20131, multiplied by master volume.").addSlider(
@@ -254,18 +254,18 @@ var PlaylistSettingsModal = class extends import_obsidian2.Modal {
     let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
     let vol = typeof pref.volume === "number" ? pref.volume : 1;
     let loop = !!pref.loop;
-    new import_obsidian2.Setting(contentEl).setName("Fade-in (ms)").setDesc("Leer lassen, um den globalen Standard zu verwenden.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
+    new import_obsidian2.Setting(contentEl).setName("Fade in (ms)").setDesc("Leave empty to use the global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
       fadeInStr = v;
     }));
-    new import_obsidian2.Setting(contentEl).setName("Fade-out (ms)").setDesc("Leer lassen, um den globalen Standard zu verwenden.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeOutMs)).setValue(fadeOutStr).onChange((v) => {
+    new import_obsidian2.Setting(contentEl).setName("Fade out (ms)").setDesc("Leave empty to use the global default.").addText((ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeOutMs)).setValue(fadeOutStr).onChange((v) => {
       fadeOutStr = v;
     }));
-    new import_obsidian2.Setting(contentEl).setName("Volume").setDesc("0\u20131, wird mit der Master-Lautst\xE4rke multipliziert.").addSlider(
+    new import_obsidian2.Setting(contentEl).setName("Volume").setDesc("0\u20131, multiplied by master volume.").addSlider(
       (s) => s.setLimits(0, 1, 0.01).setValue(vol).onChange((v) => {
         vol = v;
       })
     );
-    new import_obsidian2.Setting(contentEl).setName("Loop (gesamte Playlist)").addToggle((tg) => tg.setValue(loop).onChange((v) => {
+    new import_obsidian2.Setting(contentEl).setName("Loop playlist").addToggle((tg) => tg.setValue(loop).onChange((v) => {
       loop = v;
     }));
     new import_obsidian2.Setting(contentEl).addButton((b) => b.setButtonText("Restore defaults").onClick(async () => {
@@ -302,7 +302,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     super(leaf);
     this.state = {};
     this.playingFiles = /* @__PURE__ */ new Set();
-    // Playlist-Laufzeitstatus pro Playlist-Ordner
+    // Runtime status per playlist folder
     this.playlistStates = /* @__PURE__ */ new Map();
     this.playIdToPlaylist = /* @__PURE__ */ new Map();
     this.plugin = plugin;
@@ -363,7 +363,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     contentEl.empty();
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
     const folderSelect = toolbar.createEl("select");
-    folderSelect.createEl("option", { text: "Alle Ordner", value: "" });
+    folderSelect.createEl("option", { text: "All folders", value: "" });
     const topFolders = this.library?.topFolders ?? [];
     for (const f of topFolders) {
       const label = this.library?.rootFolder ? f.replace(new RegExp("^" + this.library.rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?"), "") : f;
@@ -392,7 +392,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     };
     const grid = contentEl.createDiv({ cls: "ttrpg-sb-grid" });
     if (!this.library) {
-      grid.createDiv({ text: "Keine Dateien gefunden. Pr\xFCfe die Einstellungen." });
+      grid.createDiv({ text: "No files found. Check settings." });
       return;
     }
     const folder = this.state.folder ?? "";
@@ -405,7 +405,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     }
     const content = this.library.byFolder[folder];
     if (!content) {
-      grid.createDiv({ text: "Ordner-Inhalt nicht gefunden." });
+      grid.createDiv({ text: "Folder contents not found." });
       return;
     }
     for (const file of content.files) {
@@ -459,7 +459,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     };
     const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     (0, import_obsidian3.setIcon)(gearPerBtn, "gear");
-    gearPerBtn.setAttr("aria-label", "Per-title settings");
+    gearPerBtn.setAttr("aria-label", "Sound settings");
     gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
   }
   findThumbFor(file) {
@@ -484,7 +484,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
     const prevBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     (0, import_obsidian3.setIcon)(prevBtn, "skip-back");
-    prevBtn.setAttr("aria-label", "Vorheriger Titel");
+    prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
       void this.prevInPlaylist(pl);
     };
@@ -495,7 +495,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     };
     const nextBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     (0, import_obsidian3.setIcon)(nextBtn, "skip-forward");
-    nextBtn.setAttr("aria-label", "N\xE4chster Titel");
+    nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
       void this.nextInPlaylist(pl);
     };
@@ -521,7 +521,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
-      } catch (_e) {
+      } catch {
       }
       st.handle = void 0;
     }
@@ -548,7 +548,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
-      } catch (_e) {
+      } catch {
       }
       st.handle = void 0;
     }
@@ -562,7 +562,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
-      } catch (_e) {
+      } catch {
       }
       st.handle = void 0;
     }
@@ -576,7 +576,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
-      } catch (_e) {
+      } catch {
       }
       st.handle = void 0;
     }
@@ -649,8 +649,8 @@ var SoundboardSettingTab = class extends import_obsidian4.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian4.Setting(containerEl).setName("General").setHeading();
-    new import_obsidian4.Setting(containerEl).setName("Root folder").setDesc("Only subfolders under this folder are listed as options. Example: Soundbar").addText((ti) => ti.setPlaceholder("Soundbar").setValue(this.plugin.settings.rootFolder).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Library").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("Root folder").setDesc("Only subfolders under this folder are listed as options. Example: Soundbar.").addText((ti) => ti.setPlaceholder("Soundbar").setValue(this.plugin.settings.rootFolder).onChange((v) => {
       this.plugin.settings.rootFolder = v.trim();
       void this.plugin.saveSettings();
       this.plugin.rescan();
@@ -660,22 +660,23 @@ var SoundboardSettingTab = class extends import_obsidian4.PluginSettingTab {
       void this.plugin.saveSettings();
       this.plugin.rescan();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Folders (legacy, comma-separated)").setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX").addText((ti) => ti.setValue(this.plugin.settings.folders.join(", ")).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Folders (legacy, comma separated)").setDesc("Used only when the root folder is empty. Example: TTRPG Sounds, Audio/SFX.").addText((ti) => ti.setValue(this.plugin.settings.folders.join(", ")).onChange((v) => {
       this.plugin.settings.folders = v.split(",").map((s) => s.trim()).filter(Boolean);
       void this.plugin.saveSettings();
       this.plugin.rescan();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Allowed extensions").setDesc("Comma-separated, e.g. mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).").addText((ti) => ti.setValue(this.plugin.settings.extensions.join(", ")).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Allowed extensions").setDesc("Comma separated, e.g., mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).").addText((ti) => ti.setValue(this.plugin.settings.extensions.join(", ")).onChange((v) => {
       this.plugin.settings.extensions = v.split(",").map((s) => s.trim().replace(/^\./, "")).filter(Boolean);
       void this.plugin.saveSettings();
       this.plugin.rescan();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Fade-in (ms)").addText((ti) => ti.setValue(String(this.plugin.settings.defaultFadeInMs)).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Playback").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("Fade in (ms)").addText((ti) => ti.setValue(String(this.plugin.settings.defaultFadeInMs)).onChange((v) => {
       const n = Number(v);
       if (!Number.isNaN(n)) this.plugin.settings.defaultFadeInMs = n;
       void this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Fade-out (ms)").addText((ti) => ti.setValue(String(this.plugin.settings.defaultFadeOutMs)).onChange((v) => {
+    new import_obsidian4.Setting(containerEl).setName("Fade out (ms)").addText((ti) => ti.setValue(String(this.plugin.settings.defaultFadeOutMs)).onChange((v) => {
       const n = Number(v);
       if (!Number.isNaN(n)) this.plugin.settings.defaultFadeOutMs = n;
       void this.plugin.saveSettings();
@@ -689,6 +690,7 @@ var SoundboardSettingTab = class extends import_obsidian4.PluginSettingTab {
       this.plugin.engine?.setMasterVolume(v);
       void this.plugin.saveSettings();
     }));
+    new import_obsidian4.Setting(containerEl).setName("Appearance").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Tile height (px)").setDesc("Adjust thumbnail tile height for the grid.").addSlider((s) => s.setLimits(30, 300, 1).setValue(this.plugin.settings.tileHeightPx).onChange((v) => {
       this.plugin.settings.tileHeightPx = v;
       this.plugin.applyCssVars();

@@ -29,9 +29,8 @@ export class AudioEngine {
 
   on(cb: (e: PlaybackEvent) => void) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
   private emit(e: PlaybackEvent) {
-    // Intendiert nicht gewartet – Kennzeichnung mit void, um Linter-Anforderung zu erfüllen
     this.listeners.forEach(fn => {
-      try { void fn(e); } catch (_err) { /* ignore listener error */ }
+      try { void fn(e); } catch { /* ignore listener error */ }
     });
   }
 
@@ -53,7 +52,7 @@ export class AudioEngine {
       this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") {
-      try { await this.ctx.resume(); } catch (_e) { /* ignore resume error */ }
+      try { await this.ctx.resume(); } catch { /* ignore resume error */ }
     }
   }
 
@@ -134,13 +133,13 @@ export class AudioEngine {
         rec.gain.gain.setValueAtTime(cur, n);
         rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
         window.setTimeout(() => {
-          try { rec.source.stop(); } catch (_e) { /* ignore stop error */ }
+          try { rec.source.stop(); } catch { /* ignore stop error */ }
           this.playing.delete(id);
           this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
           resolve();
         }, Math.max(1, sOpts?.fadeOutMs ?? 0));
       } else {
-        try { rec.source.stop(); } catch (_e) { /* ignore stop error */ }
+        try { rec.source.stop(); } catch { /* ignore stop error */ }
         this.playing.delete(id);
         this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
         resolve();
