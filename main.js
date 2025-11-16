@@ -79,7 +79,7 @@ var AudioEngine = class {
     const ctx = this.ctx;
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
     const audioBuffer = await new Promise((resolve, reject) => {
-      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     this.buffers.set(key, audioBuffer);
     return audioBuffer;

@@ -11,7 +11,7 @@ export interface PlaybackEvent {
   type: "start" | "stop";
   filePath: string;
   id: string;
-  reason?: "ended" | "stopped"; // ended = natürliches Ende, stopped = manuell/Stop
+  reason?: "ended" | "stopped";
 }
 
 type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
@@ -66,7 +66,7 @@ export class AudioEngine {
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     this.buffers.set(key, audioBuffer);
     return audioBuffer;
