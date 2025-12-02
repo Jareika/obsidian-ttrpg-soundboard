@@ -427,6 +427,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       folderA: this.state.folderA,
       folderB: this.state.folderB,
       activeSlot: this.state.activeSlot ?? "A"
+      // legacy "folder" speichern wir nicht mehr
     };
   }
   async setState(state) {
@@ -468,7 +469,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     const topFolders = this.library?.topFolders ?? [];
     const rootFolder = this.library?.rootFolder;
     const rootRegex = rootFolder != null ? new RegExp(
-      "^" + rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?"
+      `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`
     ) : null;
     const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
     const folderA = this.state.folderA ?? "";
@@ -504,8 +505,8 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     });
     switchBtn.onclick = async () => {
       const current = this.state.activeSlot ?? "A";
-      const next = current === "A" ? "B" : "A";
-      this.state.activeSlot = next;
+      const nextSlot = current === "A" ? "B" : "A";
+      this.state.activeSlot = nextSlot;
       await this.saveViewState();
       this.render();
     };
@@ -617,10 +618,11 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       attr: { "aria-label": file.basename }
     });
     const thumb = this.findThumbFor(file);
-    if (thumb)
+    if (thumb) {
       tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
         thumb
       )})`;
+    }
     const pref = this.plugin.getSoundPref(file.path);
     const isAmbience = this.plugin.isAmbiencePath(file.path);
     tile.onclick = async () => {
@@ -796,10 +798,11 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       cls: "ttrpg-sb-tile playlist",
       attr: { "aria-label": pl.name }
     });
-    if (pl.cover)
+    if (pl.cover) {
       tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
         pl.cover
       )})`;
+    }
     tile.onclick = () => {
       void this.startPlaylist(pl, 0);
     };
@@ -958,8 +961,8 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       }
       st.handle = void 0;
     }
-    const next = (st.index + 1) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, next);
+    const nextIndex = (st.index + 1) % Math.max(1, pl.tracks.length);
+    await this.playPlaylistIndex(pl, nextIndex);
   }
   async prevInPlaylist(pl) {
     const st = this.ensurePlaylistState(pl.path);
@@ -972,8 +975,8 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       }
       st.handle = void 0;
     }
-    const prev = (st.index - 1 + pl.tracks.length) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, prev);
+    const prevIndex = (st.index - 1 + pl.tracks.length) % Math.max(1, pl.tracks.length);
+    await this.playPlaylistIndex(pl, prevIndex);
   }
   async onTrackEndedNaturally(pPath) {
     const st = this.ensurePlaylistState(pPath);
@@ -1149,7 +1152,7 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
     containerEl.empty();
     new import_obsidian5.Setting(containerEl).setName("Library").setHeading();
     new import_obsidian5.Setting(containerEl).setName("Root folder").setDesc(
-      "Only subfolders under this folder are listed as options. Example: Soundbar."
+      "Only subfolders under this folder are listed as options."
     ).addText(
       (ti) => ti.setPlaceholder("Soundbar").setValue(this.plugin.settings.rootFolder).onChange((v) => {
         this.plugin.settings.rootFolder = v.trim();
@@ -1174,7 +1177,7 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     new import_obsidian5.Setting(containerEl).setName("Allowed extensions").setDesc(
-      "Comma separated, e.g., mp3, ogg, wav, m4a, flac (FLAC may not be supported on iOS)."
+      "E.g., mp3, ogg, wav, m4a, flac."
     ).addText(
       (ti) => ti.setValue(this.plugin.settings.extensions.join(", ")).onChange((v) => {
         this.plugin.settings.extensions = v.split(",").map((s) => s.trim().replace(/^\./, "")).filter(Boolean);
@@ -1228,7 +1231,7 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     new import_obsidian5.Setting(containerEl).setName("Note button icon size (px)").setDesc(
-      "Maximum height of thumbnail images used in note buttons inside markdown."
+      "Height of images used in note buttons."
     ).addSlider(
       (s) => s.setLimits(16, 128, 1).setValue(this.plugin.settings.noteIconSizePx).onChange((v) => {
         this.plugin.settings.noteIconSizePx = v;
@@ -1503,10 +1506,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
       sbLeaf = sbLeaves[0];
     } else {
       sbLeaf = workspace.getRightLeaf(false);
-      await sbLeaf?.setViewState({
-        type: VIEW_TYPE_TTRPG_SOUNDBOARD,
-        active: true
-      });
+      if (sbLeaf) {
+        await sbLeaf.setViewState({
+          type: VIEW_TYPE_TTRPG_SOUNDBOARD,
+          active: true
+        });
+      }
     }
     if (sbLeaf) {
       void workspace.revealLeaf(sbLeaf);
@@ -1515,10 +1520,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
     const npLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
     if (!npLeaves.length) {
       const right = workspace.getRightLeaf(true);
-      await right?.setViewState({
-        type: VIEW_TYPE_TTRPG_NOWPLAYING,
-        active: false
-      });
+      if (right) {
+        await right.setViewState({
+          type: VIEW_TYPE_TTRPG_NOWPLAYING,
+          active: false
+        });
+      }
     }
   }
   rescan() {

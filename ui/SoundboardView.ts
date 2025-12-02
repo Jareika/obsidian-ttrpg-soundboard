@@ -10,6 +10,8 @@ interface ViewState {
   folderA?: string;
   folderB?: string;
   activeSlot?: "A" | "B";
+  // Legacy-Feld aus alten Versionen, die nur ein "folder" gespeichert haben
+  folder?: string;
 }
 
 interface PlaylistPlayState {
@@ -91,18 +93,19 @@ export default class SoundboardView extends ItemView {
       folderA: this.state.folderA,
       folderB: this.state.folderB,
       activeSlot: this.state.activeSlot ?? "A",
+      // legacy "folder" speichern wir nicht mehr
     };
   }
 
-  async setState(state: ViewState & { folder?: string }) {
+  async setState(state: ViewState) {
     const next: ViewState = {
       folderA: state.folderA,
       folderB: state.folderB,
       activeSlot: state.activeSlot,
     };
 
-    // Migration from very old view state that only stored "folder"
-    const legacyFolder = (state as any).folder as string | undefined;
+    // Migration von sehr altem ViewState, der nur "folder" kannte
+    const legacyFolder = state.folder;
     if (!next.folderA && !next.folderB && legacyFolder) {
       next.folderA = legacyFolder;
       next.activeSlot = "A";
@@ -145,9 +148,7 @@ export default class SoundboardView extends ItemView {
     const rootRegex =
       rootFolder != null
         ? new RegExp(
-            "^" +
-              rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
-              "/?",
+            `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
           )
         : null;
     const makeLabel = (f: string) =>
@@ -196,8 +197,8 @@ export default class SoundboardView extends ItemView {
     });
     switchBtn.onclick = async () => {
       const current = this.state.activeSlot ?? "A";
-      const next: "A" | "B" = current === "A" ? "B" : "A";
-      this.state.activeSlot = next;
+      const nextSlot: "A" | "B" = current === "A" ? "B" : "A";
+      this.state.activeSlot = nextSlot;
       await this.saveViewState();
       this.render();
     };
@@ -312,7 +313,8 @@ export default class SoundboardView extends ItemView {
       return;
     }
     try {
-      const buffer = await this.plugin.engine.loadBuffer(file as TFile);
+      // Cast entfernt: file ist bereits vom Typ TFile
+      const buffer = await this.plugin.engine.loadBuffer(file);
       const dur = this.formatDuration(buffer.duration);
       this.durationCache.set(file.path, dur);
       if (dur) span.setText(dur);
@@ -332,10 +334,11 @@ export default class SoundboardView extends ItemView {
       attr: { "aria-label": file.basename },
     });
     const thumb = this.findThumbFor(file);
-    if (thumb)
+    if (thumb) {
       tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
         thumb,
       )})`;
+    }
 
     const pref = this.plugin.getSoundPref(file.path);
     const isAmbience = this.plugin.isAmbiencePath(file.path);
@@ -543,10 +546,11 @@ export default class SoundboardView extends ItemView {
       cls: "ttrpg-sb-tile playlist",
       attr: { "aria-label": pl.name },
     });
-    if (pl.cover)
+    if (pl.cover) {
       tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
         pl.cover,
       )})`;
+    }
 
     tile.onclick = () => {
       void this.startPlaylist(pl, 0);
@@ -748,8 +752,8 @@ export default class SoundboardView extends ItemView {
       st.handle = undefined;
     }
 
-    const next = (st.index + 1) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, next);
+    const nextIndex = (st.index + 1) % Math.max(1, pl.tracks.length);
+    await this.playPlaylistIndex(pl, nextIndex);
   }
 
   private async prevInPlaylist(pl: PlaylistInfo) {
@@ -767,9 +771,9 @@ export default class SoundboardView extends ItemView {
       st.handle = undefined;
     }
 
-    const prev =
+    const prevIndex =
       (st.index - 1 + pl.tracks.length) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, prev);
+    await this.playPlaylistIndex(pl, prevIndex);
   }
 
   private async onTrackEndedNaturally(pPath: string) {

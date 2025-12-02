@@ -166,7 +166,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     void this.engine?.stopAll(0);
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
-    // We intentionally do not detach leaves so the user's layout persists.
+    // Wir lassen Leaves im Layout, damit der User das Layout behält.
   }
 
   // ===== CSS helper =====
@@ -207,10 +207,12 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       sbLeaf = sbLeaves[0];
     } else {
       sbLeaf = workspace.getRightLeaf(false);
-      await sbLeaf?.setViewState({
-        type: VIEW_TYPE_TTRPG_SOUNDBOARD,
-        active: true,
-      });
+      if (sbLeaf) {
+        await sbLeaf.setViewState({
+          type: VIEW_TYPE_TTRPG_SOUNDBOARD,
+          active: true,
+        });
+      }
     }
     if (sbLeaf) {
       void workspace.revealLeaf(sbLeaf);
@@ -221,10 +223,12 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const npLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
     if (!npLeaves.length) {
       const right = workspace.getRightLeaf(true);
-      await right?.setViewState({
-        type: VIEW_TYPE_TTRPG_NOWPLAYING,
-        active: false,
-      });
+      if (right) {
+        await right.setViewState({
+          type: VIEW_TYPE_TTRPG_NOWPLAYING,
+          active: false,
+        });
+      }
     }
   }
 
@@ -486,7 +490,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return;
     }
 
-    const file = af as TFile;
+    // HIER die Änderung: kein "as TFile" mehr nötig,
+    // TypeScript weiß nach dem instanceof-Check, dass af ein TFile ist.
+    const file = af;
+
     const pref = this.getSoundPref(path);
     const isAmb = this.isAmbiencePath(path);
     const baseVol = pref.volume ?? 1;

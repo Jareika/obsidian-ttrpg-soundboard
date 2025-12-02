@@ -49,7 +49,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Root folder")
       .setDesc(
-        "Only subfolders under this folder are listed as options. Example: Soundbar.",
+        "Only subfolders under this folder are listed as options.",
       )
       .addText((ti) =>
         ti
@@ -96,7 +96,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Allowed extensions")
       .setDesc(
-        "Comma separated, e.g., mp3, ogg, wav, m4a, flac (FLAC may not be supported on iOS).",
+        "E.g., mp3, ogg, wav, m4a, flac.",
       )
       .addText((ti) =>
         ti
@@ -198,7 +198,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Note button icon size (px)")
       .setDesc(
-        "Maximum height of thumbnail images used in note buttons inside markdown.",
+        "Height of images used in note buttons.",
       )
       .addSlider((s) =>
         s
