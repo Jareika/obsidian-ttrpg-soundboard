@@ -1,8 +1,85 @@
 :root {
   --ttrpg-tile-height: 100px;
   --ttrpg-grid-gap: 16px;
-  --ttrpg-playlist-accent: #d4af37; /* Goldgelb */
+  --ttrpg-playlist-accent: #d4af37; /* golden yellow */
+  --ttrpg-note-icon-size: 40px;     /* default size for note button images */
 }
+
+/* Root container for the view: remove extra top padding */
+.ttrpg-sb-view {
+  padding-top: 0 !important;
+}
+
+/* Sticky toolbar at the top */
+.ttrpg-sb-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin: -8px 0 8px 0;
+  padding: 4px 0;
+  background: var(--background-secondary);
+}
+
+/* Toolbar rows */
+.ttrpg-sb-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ttrpg-sb-toolbar-row + .ttrpg-sb-toolbar-row {
+  margin-top: 4px;
+}
+
+/* Folder selects */
+.ttrpg-sb-folder-select {
+  flex: 1 1 0;
+  min-width: 140px;
+}
+
+.ttrpg-sb-folder-select select {
+  width: 100%;
+}
+
+.ttrpg-sb-folder-select.active select {
+  border-color: var(--interactive-accent);
+}
+
+/* Slider groups (Master / Ambience) */
+.ttrpg-sb-slider-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+
+.ttrpg-sb-slider-group input[type="range"] {
+  flex: 1 1 auto;
+}
+
+.ttrpg-sb-slider-label {
+  white-space: nowrap;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+/* Stop all button in toolbar */
+.ttrpg-sb-stop-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+
+/* ===== Grid cards ===== */
 
 .ttrpg-sb-grid {
   display: grid;
@@ -17,10 +94,17 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  background: var(--background-primary);
 }
 
+/* Playlist cards: slightly golden background */
 .ttrpg-sb-card.playlist {
   border-color: var(--ttrpg-playlist-accent);
+  background: color-mix(
+    in srgb,
+    var(--ttrpg-playlist-accent) 15%,
+    var(--background-primary) 85%
+  );
 }
 
 .ttrpg-sb-title {
@@ -30,31 +114,58 @@
   word-break: break-word;
 }
 
+/* Thumbnail tiles */
+
 .ttrpg-sb-tile {
   position: relative;
   width: 100%;
   height: var(--ttrpg-tile-height, 220px);
   border-radius: 6px;
-  background: linear-gradient(135deg, var(--background-modifier-form-field), var(--background-secondary));
+  background: linear-gradient(
+    135deg,
+    var(--background-modifier-form-field),
+    var(--background-secondary)
+  );
   background-size: cover;
   background-position: center;
+  background-repeat: no-repeat;
   border: 1px solid var(--background-modifier-border);
   cursor: pointer;
 }
-.ttrpg-sb-tile:hover { filter: brightness(1.02); }
 
-.ttrpg-sb-tile.playlist {
-  border-color: var(--ttrpg-playlist-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
+.ttrpg-sb-tile:hover {
+  filter: brightness(1.02);
 }
 
+/* Playlist tiles: gold border + same full-cover thumbnail behavior */
+.ttrpg-sb-tile.playlist {
+  border-color: var(--ttrpg-playlist-accent);
+  background-color: color-mix(
+    in srgb,
+    var(--ttrpg-playlist-accent) 12%,
+    var(--background-secondary) 88%
+  );
+  /* Important change:
+     we do NOT override background-size/position here,
+     so they stay "cover" / "center" from .ttrpg-sb-tile */
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
+}
+
+/* Button row under tiles */
 .ttrpg-sb-btnrow {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* Einheitliche Button-Grundwerte für Icon- und Stop-Buttons */
+/* Inline volume slider for single tracks */
+.ttrpg-sb-inline-volume {
+  flex: 1 1 auto;
+  min-width: 40px;
+}
+
+/* Base button styles */
 .ttrpg-sb-icon-btn,
 .ttrpg-sb-stop {
   display: inline-flex;
@@ -68,42 +179,172 @@
   cursor: pointer;
 }
 
-/* Icon-Buttons quadratisch */
+/* Square icon buttons */
 .ttrpg-sb-icon-btn {
   width: 28px;
   padding: 0;
 }
 
-/* Stop-Button mit Text: gleich hoch, aber mit horizontaler Polsterung */
+/* Stop button with label */
 .ttrpg-sb-stop {
   padding: 0 10px;
   line-height: 1;
 }
 
-.push-right { margin-left: auto; }
+.push-right {
+  margin-left: auto;
+}
 
-/* Loop aktiv sichtbar machen */
+/* Loop button active state */
 .ttrpg-sb-loop.active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
 }
 
-/* Tablet-Tuning */
+/* Tablet tweaks */
 @media (max-width: 1024px) {
-  .ttrpg-sb-btnrow { gap: 6px; }
+  .ttrpg-sb-btnrow {
+    gap: 6px;
+  }
   .ttrpg-sb-icon-btn {
     width: 24px;
     height: 24px;
     border-radius: 5px;
   }
-  .ttrpg-sb-stop { height: 24px; padding: 0 8px; }
-  .ttrpg-sb-title { margin-bottom: 0; }
+  .ttrpg-sb-stop {
+    height: 24px;
+    padding: 0 8px;
+  }
+  .ttrpg-sb-title {
+    margin-bottom: 0;
+  }
 }
 
-/* Stop-Button, wenn ein Titel spielt */
+/* Stop button when something is playing */
 .ttrpg-sb-stop.playing {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
+}
+
+/* ===== Now-playing view ===== */
+
+.ttrpg-sb-now-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--ttrpg-grid-gap, 8px);
+}
+
+.ttrpg-sb-now-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--background-primary);
+}
+
+.ttrpg-sb-now-title {
+  font-weight: 600;
+  font-size: 0.95em;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.ttrpg-sb-now-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ===== Simple list view ===== */
+
+.ttrpg-sb-simple-list {
+  display: block;
+}
+
+.ttrpg-sb-simple-row {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ttrpg-sb-simple-row.playing {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+}
+
+.ttrpg-sb-simple-row.playlist {
+  border-left: 3px solid var(--ttrpg-playlist-accent);
+  padding-left: 5px;
+}
+
+.ttrpg-sb-simple-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ttrpg-sb-simple-title {
+  font-weight: 600;
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.ttrpg-sb-simple-duration {
+  font-size: 0.85em;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.ttrpg-sb-simple-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ===== Note buttons with thumbnail images ===== */
+
+/* Button itself: fully transparent, used only as a click target */
+.ttrpg-sb-stop.ttrpg-sb-note-thumb {
+  padding: 0;
+  border: none;
+  background: transparent;
+  height: auto;          /* remove fixed button height */
+}
+
+/* Also no filled box in playing state; highlight happens on the image */
+.ttrpg-sb-stop.ttrpg-sb-note-thumb.playing {
+  background: transparent;
+  border: none;
+}
+
+/* Thumbnail itself: only the image, no border by default */
+.ttrpg-sb-stop.ttrpg-sb-note-thumb img {
+  display: block;
+  max-height: var(--ttrpg-note-icon-size, 40px);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Playing state: glow around the image, but still no filled box */
+.ttrpg-sb-stop.ttrpg-sb-note-thumb.playing img {
+  border: none;
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+}
+
+.ttrpg-sb-stop.ttrpg-sb-note-thumb,
+.ttrpg-sb-stop.ttrpg-sb-note-thumb:hover,
+.ttrpg-sb-stop.ttrpg-sb-note-thumb:active,
+.ttrpg-sb-stop.ttrpg-sb-note-thumb:focus {
+  padding: 0;
+  border: none;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
 }

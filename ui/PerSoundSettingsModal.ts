@@ -17,71 +17,115 @@ export class PerSoundSettingsModal extends Modal {
     contentEl.empty();
 
     const pref = this.plugin.getSoundPref(this.filePath);
-    let fadeInStr = typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
-    let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
+
+    let fadeInStr =
+      typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
+    let fadeOutStr =
+      typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
     let vol = typeof pref.volume === "number" ? pref.volume : 1;
+    const originalVol = vol; // keep original volume so Cancel can restore it
     let loop = !!pref.loop;
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
       .setDesc("Leave empty to use the global default.")
-      .addText(ti => ti
-        .setPlaceholder(String(this.plugin.settings.defaultFadeInMs))
-        .setValue(fadeInStr)
-        .onChange(v => { fadeInStr = v; }));
+      .addText((ti) =>
+        ti
+          .setPlaceholder(String(this.plugin.settings.defaultFadeInMs))
+          .setValue(fadeInStr)
+          .onChange((v) => {
+            fadeInStr = v;
+          }),
+      );
 
     new Setting(contentEl)
       .setName("Fade out (ms)")
       .setDesc("Leave empty to use the global default.")
-      .addText(ti => ti
-        .setPlaceholder(String(this.plugin.settings.defaultFadeOutMs))
-        .setValue(fadeOutStr)
-        .onChange(v => { fadeOutStr = v; }));
+      .addText((ti) =>
+        ti
+          .setPlaceholder(String(this.plugin.settings.defaultFadeOutMs))
+          .setValue(fadeOutStr)
+          .onChange((v) => {
+            fadeOutStr = v;
+          }),
+      );
 
     new Setting(contentEl)
       .setName("Volume")
-      .setDesc("0–1, multiplied by master volume.")
-      .addSlider(s => s
-        .setLimits(0, 1, 0.01)
-        .setValue(vol)
-        .onChange(v => { vol = v; })
+      .setDesc("0–1, multiplied by the master volume.")
+      .addSlider((s) =>
+        s
+          .setLimits(0, 1, 0.01)
+          .setValue(vol)
+          .onChange((v) => {
+            vol = v;
+            // Live-adjust the volume for all currently playing instances of this file
+            this.plugin.applyEffectiveVolumeForSingle(this.filePath, vol);
+          }),
       );
 
     new Setting(contentEl)
       .setName("Loop by default")
-      .addToggle(tg => tg.setValue(loop).onChange(v => { loop = v; }));
+      .addToggle((tg) =>
+        tg.setValue(loop).onChange((v) => {
+          loop = v;
+        }),
+      );
 
     new Setting(contentEl)
-      .addButton(b => b
-        .setButtonText("Restore defaults")
-        .onClick(async () => {
-          delete pref.fadeInMs;
-          delete pref.fadeOutMs;
-          delete pref.volume;
-          delete pref.loop;
-          this.plugin.setSoundPref(this.filePath, pref);
-          await this.plugin.saveSettings();
-          this.plugin.refreshViews();
-          this.close();
-        }))
-      .addButton(b => b
-        .setCta()
-        .setButtonText("Save")
-        .onClick(async () => {
-          const fi = fadeInStr.trim() === "" ? undefined : Number(fadeInStr);
-          const fo = fadeOutStr.trim() === "" ? undefined : Number(fadeOutStr);
-          if (fi != null && Number.isNaN(fi)) return;
-          if (fo != null && Number.isNaN(fo)) return;
+      .addButton((b) =>
+        b
+          .setButtonText("Restore defaults")
+          .onClick(async () => {
+            delete pref.fadeInMs;
+            delete pref.fadeOutMs;
+            delete pref.volume;
+            delete pref.loop;
 
-          pref.fadeInMs = fi;
-          pref.fadeOutMs = fo;
-          pref.volume = vol;
-          pref.loop = loop;
-          this.plugin.setSoundPref(this.filePath, pref);
-          await this.plugin.saveSettings();
-          this.plugin.refreshViews();
+            this.plugin.setSoundPref(this.filePath, pref);
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+
+            // Reset volume of currently playing instances for this file back to 1
+            this.plugin.applyEffectiveVolumeForSingle(this.filePath, 1);
+
+            this.close();
+          }),
+      )
+      .addButton((b) =>
+        b
+          .setCta()
+          .setButtonText("Save")
+          .onClick(async () => {
+            const fi =
+              fadeInStr.trim() === "" ? undefined : Number(fadeInStr);
+            const fo =
+              fadeOutStr.trim() === "" ? undefined : Number(fadeOutStr);
+
+            if (fi != null && Number.isNaN(fi)) return;
+            if (fo != null && Number.isNaN(fo)) return;
+
+            pref.fadeInMs = fi;
+            pref.fadeOutMs = fo;
+            pref.volume = vol;
+            pref.loop = loop;
+
+            this.plugin.setSoundPref(this.filePath, pref);
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+            this.close();
+          }),
+      )
+      .addButton((b) =>
+        b.setButtonText("Cancel").onClick(() => {
+          // Restore the original live volume if it was changed via the slider
+          this.plugin.applyEffectiveVolumeForSingle(
+            this.filePath,
+            originalVol,
+          );
+          // Preferences are unchanged; just close the modal
           this.close();
-        }))
-      .addButton(b => b.setButtonText("Cancel").onClick(() => this.close()));
+        }),
+      );
   }
 }

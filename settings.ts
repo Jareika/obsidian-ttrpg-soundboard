@@ -10,7 +10,10 @@ export interface SoundboardSettings {
   defaultFadeOutMs: number;
   allowOverlap: boolean;
   masterVolume: number;
+  ambienceVolume: number;    // global ambience multiplier 0..1
+  simpleView: boolean;       // true = simple one-column list, false = tile grid
   tileHeightPx: number;      // tile height in px
+  noteIconSizePx: number;    // max height for note button thumbnails in px
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -22,12 +25,19 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   defaultFadeOutMs: 3000,
   allowOverlap: true,
   masterVolume: 1,
-  tileHeightPx: 100
+  ambienceVolume: 1,
+  simpleView: false,
+  tileHeightPx: 100,
+  noteIconSizePx: 40,
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
   plugin: TTRPGSoundboardPlugin;
-  constructor(app: App, plugin: TTRPGSoundboardPlugin) { super(app, plugin); this.plugin = plugin; }
+
+  constructor(app: App, plugin: TTRPGSoundboardPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
 
   display(): void {
     const { containerEl } = this;
@@ -38,104 +48,167 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Root folder")
-      .setDesc("Only subfolders under this folder are listed as options. Example: soundbar.")
-      .addText(ti => ti
-        .setPlaceholder("Soundbar")
-        .setValue(this.plugin.settings.rootFolder)
-        .onChange(v => {
-          this.plugin.settings.rootFolder = v.trim();
-          void this.plugin.saveSettings();
-          this.plugin.rescan();
-        }));
+      .setDesc(
+        "Only subfolders under this folder are listed as options. Example: Soundbar.",
+      )
+      .addText((ti) =>
+        ti
+          .setPlaceholder("Soundbar")
+          .setValue(this.plugin.settings.rootFolder)
+          .onChange((v) => {
+            this.plugin.settings.rootFolder = v.trim();
+            void this.plugin.saveSettings();
+            this.plugin.rescan();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Include files directly in root")
-      .setDesc("If enabled, files directly in the root folder are listed (otherwise only in subfolders).")
-      .addToggle(tg => tg
-        .setValue(this.plugin.settings.includeRootFiles)
-        .onChange(v => {
-          this.plugin.settings.includeRootFiles = v;
-          void this.plugin.saveSettings();
-          this.plugin.rescan();
-        }));
+      .setDesc(
+        "If enabled, files directly in the root folder are listed (otherwise only in subfolders).",
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.includeRootFiles)
+          .onChange((v) => {
+            this.plugin.settings.includeRootFiles = v;
+            void this.plugin.saveSettings();
+            this.plugin.rescan();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Folders (legacy, comma separated)")
       .setDesc("Used only when the root folder is empty.")
-      .addText(ti => ti
-        .setValue(this.plugin.settings.folders.join(", "))
-        .onChange(v => {
-          this.plugin.settings.folders = v.split(",").map(s => s.trim()).filter(Boolean);
-          void this.plugin.saveSettings();
-          this.plugin.rescan();
-        }));
+      .addText((ti) =>
+        ti
+          .setValue(this.plugin.settings.folders.join(", "))
+          .onChange((v) => {
+            this.plugin.settings.folders = v
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            void this.plugin.saveSettings();
+            this.plugin.rescan();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Allowed extensions")
-      .setDesc("Comma separated, e.g., mp3, ogg, wav, m4a, flac (flac may not be supported on iOS).")
-      .addText(ti => ti
-        .setValue(this.plugin.settings.extensions.join(", "))
-        .onChange(v => {
-          this.plugin.settings.extensions = v.split(",").map(s => s.trim().replace(/^\./,"")).filter(Boolean);
-          void this.plugin.saveSettings();
-          this.plugin.rescan();
-        }));
+      .setDesc(
+        "Comma separated, e.g., mp3, ogg, wav, m4a, flac (FLAC may not be supported on iOS).",
+      )
+      .addText((ti) =>
+        ti
+          .setValue(this.plugin.settings.extensions.join(", "))
+          .onChange((v) => {
+            this.plugin.settings.extensions = v
+              .split(",")
+              .map((s) => s.trim().replace(/^\./, ""))
+              .filter(Boolean);
+            void this.plugin.saveSettings();
+            this.plugin.rescan();
+          }),
+      );
 
     // Playback
     new Setting(containerEl).setName("Playback").setHeading();
 
     new Setting(containerEl)
       .setName("Fade in (ms)")
-      .addText(ti => ti
-        .setValue(String(this.plugin.settings.defaultFadeInMs))
-        .onChange(v => {
-          const n = Number(v); if (!Number.isNaN(n)) this.plugin.settings.defaultFadeInMs = n;
-          void this.plugin.saveSettings();
-        }));
+      .addText((ti) =>
+        ti
+          .setValue(String(this.plugin.settings.defaultFadeInMs))
+          .onChange((v) => {
+            const n = Number(v);
+            if (!Number.isNaN(n)) this.plugin.settings.defaultFadeInMs = n;
+            void this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Fade out (ms)")
-      .addText(ti => ti
-        .setValue(String(this.plugin.settings.defaultFadeOutMs))
-        .onChange(v => {
-          const n = Number(v); if (!Number.isNaN(n)) this.plugin.settings.defaultFadeOutMs = n;
-          void this.plugin.saveSettings();
-        }));
+      .addText((ti) =>
+        ti
+          .setValue(String(this.plugin.settings.defaultFadeOutMs))
+          .onChange((v) => {
+            const n = Number(v);
+            if (!Number.isNaN(n)) this.plugin.settings.defaultFadeOutMs = n;
+            void this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Allow overlap")
       .setDesc("Play multiple sounds at the same time.")
-      .addToggle(tg => tg
-        .setValue(this.plugin.settings.allowOverlap)
-        .onChange(v => {
-          this.plugin.settings.allowOverlap = v;
-          void this.plugin.saveSettings();
-        }));
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.allowOverlap)
+          .onChange((v) => {
+            this.plugin.settings.allowOverlap = v;
+            void this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Master volume")
-      .addSlider(s => s
-        .setLimits(0, 1, 0.01)
-        .setValue(this.plugin.settings.masterVolume)
-        .onChange(v => {
-          this.plugin.settings.masterVolume = v;
-          this.plugin.engine?.setMasterVolume(v);
-          void this.plugin.saveSettings();
-        }));
+      .addSlider((s) =>
+        s
+          .setLimits(0, 1, 0.01)
+          .setValue(this.plugin.settings.masterVolume)
+          .onChange((v) => {
+            this.plugin.settings.masterVolume = v;
+            this.plugin.engine?.setMasterVolume(v);
+            void this.plugin.saveSettings();
+          }),
+      );
 
     // Appearance
     new Setting(containerEl).setName("Appearance").setHeading();
 
     new Setting(containerEl)
+      .setName("Simple list view")
+      .setDesc(
+        "Show sounds as a simple one-column list instead of a tile grid.",
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.simpleView)
+          .onChange((v) => {
+            this.plugin.settings.simpleView = v;
+            void this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }),
+      );
+
+    new Setting(containerEl)
       .setName("Tile height (px)")
       .setDesc("Adjust thumbnail tile height for the grid.")
-      .addSlider(s => s
-        .setLimits(30, 300, 1)
-        .setValue(this.plugin.settings.tileHeightPx)
-        .onChange(v => {
-          this.plugin.settings.tileHeightPx = v;
-          this.plugin.applyCssVars();
-          void this.plugin.saveSettings();
-        }));
+      .addSlider((s) =>
+        s
+          .setLimits(30, 300, 1)
+          .setValue(this.plugin.settings.tileHeightPx)
+          .onChange((v) => {
+            this.plugin.settings.tileHeightPx = v;
+            this.plugin.applyCssVars();
+            void this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Note button icon size (px)")
+      .setDesc(
+        "Maximum height of thumbnail images used in note buttons inside markdown.",
+      )
+      .addSlider((s) =>
+        s
+          .setLimits(16, 128, 1)
+          .setValue(this.plugin.settings.noteIconSizePx)
+          .onChange((v) => {
+            this.plugin.settings.noteIconSizePx = v;
+            this.plugin.applyCssVars();
+            void this.plugin.saveSettings();
+          }),
+      );
   }
 }

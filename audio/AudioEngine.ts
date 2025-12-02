@@ -1,17 +1,20 @@
 import { App, TFile } from "obsidian";
 
 export interface PlayOptions {
-  volume?: number;   // 0..1
+  volume?: number; // 0..1
   loop?: boolean;
   fadeInMs?: number;
 }
-export interface StopOptions { fadeOutMs?: number; }
+
+export interface StopOptions {
+  fadeOutMs?: number;
+}
 
 export interface PlaybackEvent {
   type: "start" | "stop";
   filePath: string;
   id: string;
-  reason?: "ended" | "stopped";
+  reason?: "ended" | "stopped"; // ended = natural end of the file, stopped = stopped manually
 }
 
 type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
@@ -21,30 +24,54 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
-  private playing = new Map<string, { id: string; source: AudioBufferSourceNode; gain: GainNode; file: TFile; stopped: boolean }>();
+  private playing = new Map<
+    string,
+    {
+      id: string;
+      source: AudioBufferSourceNode;
+      gain: GainNode;
+      file: TFile;
+      stopped: boolean;
+    }
+  >();
   private masterVolume = 1;
   private listeners = new Set<(e: PlaybackEvent) => void>();
 
-  constructor(app: App) { this.app = app; }
+  constructor(app: App) {
+    this.app = app;
+  }
 
-  on(cb: (e: PlaybackEvent) => void) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
+  on(cb: (e: PlaybackEvent) => void) {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
   private emit(e: PlaybackEvent) {
-    this.listeners.forEach(fn => {
-      try { void fn(e); } catch { /* ignore listener error */ }
+    this.listeners.forEach((fn) => {
+      try {
+        void fn(e);
+      } catch {
+        // Ignore listener errors so one bad listener does not break others
+      }
     });
   }
 
   setMasterVolume(v: number) {
     this.masterVolume = Math.max(0, Math.min(1, v));
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(this.masterVolume, this.ctx.currentTime);
+      this.masterGain.gain.setValueAtTime(
+        this.masterVolume,
+        this.ctx.currentTime,
+      );
     }
   }
 
   async ensureContext() {
     if (!this.ctx) {
       const w = window as WindowWithWebAudio;
-      const Ctx = (window.AudioContext ?? w.webkitAudioContext) as typeof AudioContext | undefined;
+      const Ctx = (window.AudioContext ?? w.webkitAudioContext) as
+        | typeof AudioContext
+        | undefined;
       if (!Ctx) throw new Error("Web Audio API not available");
       this.ctx = new Ctx();
       this.masterGain = this.ctx.createGain();
@@ -52,7 +79,11 @@ export class AudioEngine {
       this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") {
-      try { await this.ctx.resume(); } catch { /* ignore resume error */ }
+      try {
+        await this.ctx.resume();
+      } catch {
+        // Some browsers may refuse to resume the context; ignore
+      }
     }
   }
 
@@ -63,8 +94,10 @@ export class AudioEngine {
     const bin = await this.app.vault.readBinary(file);
     await this.ensureContext();
     const ctx = this.ctx!;
-    const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
+    const arrBuf =
+      bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
+    // ESLint fix: explicitly ignore the promise return value, we use the callback API
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
       void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
@@ -108,7 +141,12 @@ export class AudioEngine {
       const r = this.playing.get(id);
       if (!r || r.stopped) return;
       this.playing.delete(id);
-      this.emit({ type: "stop", filePath: file.path, id, reason: "ended" });
+      this.emit({
+        type: "stop",
+        filePath: file.path,
+        id,
+        reason: "ended",
+      });
     };
 
     return {
@@ -122,7 +160,7 @@ export class AudioEngine {
     if (!rec || rec.stopped) return Promise.resolve();
     rec.stopped = true;
     const ctx = this.ctx!;
-    const fadeOut = ((sOpts?.fadeOutMs ?? 0) / 1000);
+    const fadeOut = (sOpts?.fadeOutMs ?? 0) / 1000;
     const n = ctx.currentTime;
 
     return new Promise<void>((resolve) => {
@@ -132,33 +170,76 @@ export class AudioEngine {
         rec.gain.gain.setValueAtTime(cur, n);
         rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
         window.setTimeout(() => {
-          try { rec.source.stop(); } catch { /* ignore stop error */ }
+          try {
+            rec.source.stop();
+          } catch {
+            // Ignore errors when stopping an already-stopped source
+          }
           this.playing.delete(id);
-          this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
+          this.emit({
+            type: "stop",
+            filePath: rec.file.path,
+            id,
+            reason: "stopped",
+          });
           resolve();
         }, Math.max(1, sOpts?.fadeOutMs ?? 0));
       } else {
-        try { rec.source.stop(); } catch { /* ignore stop error */ }
+        try {
+          rec.source.stop();
+        } catch {
+          // Ignore errors when stopping an already-stopped source
+        }
         this.playing.delete(id);
-        this.emit({ type: "stop", filePath: rec.file.path, id, reason: "stopped" });
+        this.emit({
+          type: "stop",
+          filePath: rec.file.path,
+          id,
+          reason: "stopped",
+        });
         resolve();
       }
     });
   }
 
   async stopByFile(file: TFile, fadeOutMs = 0) {
-    const targets = [...this.playing.values()].filter(p => p.file.path === file.path);
-    await Promise.all(targets.map(t => this.stopById(t.id, { fadeOutMs })));
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path,
+    );
+    await Promise.all(
+      targets.map((t) => this.stopById(t.id, { fadeOutMs })),
+    );
   }
 
   async stopAll(fadeOutMs = 0) {
     const ids = [...this.playing.keys()];
-    await Promise.all(ids.map(id => this.stopById(id, { fadeOutMs })));
+    await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
   }
 
   async preload(files: TFile[]) {
     for (const f of files) {
-      try { await this.loadBuffer(f); } catch (err) { console.warn("Preload failed", f.path, err); }
+      try {
+        await this.loadBuffer(f);
+      } catch (err) {
+        console.error("TTRPG Soundboard: preload failed", f.path, err);
+      }
+    }
+  }
+
+  /**
+   * Set the volume (0..1) for all currently playing instances
+   * of a given file path (this does not touch the global master gain).
+   */
+  setVolumeForPath(path: string, volume: number) {
+    if (!this.ctx) return;
+    const v = Math.max(0, Math.min(1, volume));
+    const now = this.ctx.currentTime;
+
+    for (const rec of this.playing.values()) {
+      if (rec.file.path === path) {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(v, now);
+      }
     }
   }
 

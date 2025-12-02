@@ -1,45 +1,56 @@
-import { App, TFile, TFolder } from "obsidian";
+import { App, TFile, TFolder, normalizePath } from "obsidian";
 
 export const IMG_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
+const AMBIENCE_FOLDER_NAME = "ambience";
 
 export interface PlaylistInfo {
-  path: string;     // vollständiger Ordnerpfad (z.B. Root/Cat1/PlaylistA)
-  name: string;     // Ordnername
-  parent: string;   // Pfad des Eltern-Ordners (Top-Level)
-  tracks: TFile[];  // Audiodateien im Playlist-Ordner (rekursiv)
-  cover?: TFile;    // cover.jpg usw. oder erstes Bild
+  path: string; // full folder path (for example: Root/Category/PlaylistA)
+  name: string; // folder name
+  parent: string; // path of the parent (top-level) folder
+  tracks: TFile[]; // audio files inside the playlist folder (recursively)
+  cover?: TFile; // cover.xx file if present, otherwise first image file
 }
 
 export interface FolderContent {
-  folder: string;         // Top-Level-Ordner
-  files: TFile[];         // Audios direkt in diesem Ordner
-  playlists: PlaylistInfo[]; // direkte Unterordner, behandelt als Playlist
+  folder: string; // top-level folder path
+  files: TFile[]; // audio files directly in this folder (+ ambience subfolders)
+  playlists: PlaylistInfo[]; // direct subfolders (except Ambience) treated as playlists
 }
 
 export interface LibraryModel {
   rootFolder?: string;
   topFolders: string[];
   byFolder: Record<string, FolderContent>;
-  allSingles: TFile[]; // Summe aller "files" aus allen Top-Level-Ordnern (+ evtl. Dateien direkt im Root)
+  allSingles: TFile[]; // union of all "files" from all top-level folders (+ optional root files)
 }
 
 /**
- * Liefert die direkten Subfolder eines Root-Ordners (keine tiefe Rekursion).
+ * Return the direct child folders of a root folder (no deep recursion).
  */
 export function listSubfolders(app: App, rootFolder: string): string[] {
   const root = normalizeFolder(rootFolder);
   const af = app.vault.getAbstractFileByPath(root);
   if (!(af instanceof TFolder)) return [];
-  const subs = af.children.filter((c): c is TFolder => c instanceof TFolder).map(c => c.path);
+  const subs = af.children
+    .filter((c): c is TFolder => c instanceof TFolder)
+    .map((c) => c.path);
   return subs.sort((a, b) => a.localeCompare(b));
 }
 
 /**
- * Legacy: Suche in einer Liste von Ordnern (rekursiv).
+ * Legacy helper: search a list of folders recursively for audio files.
  */
-export function findAudioFiles(app: App, folders: string[], extensions: string[]): TFile[] {
-  const exts = new Set(extensions.map(e => e.toLowerCase().replace(/^\./, "")));
-  const roots = (folders ?? []).map(f => normalizeFolder(f)).filter(Boolean);
+export function findAudioFiles(
+  app: App,
+  folders: string[],
+  extensions: string[],
+): TFile[] {
+  const exts = new Set(
+    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
+  );
+  const roots = (folders ?? [])
+    .map((f) => normalizeFolder(f))
+    .filter(Boolean);
 
   const out: TFile[] = [];
   for (const f of app.vault.getAllLoadedFiles()) {
@@ -47,40 +58,60 @@ export function findAudioFiles(app: App, folders: string[], extensions: string[]
     const ext = (f.extension || "").toLowerCase();
     if (!exts.has(ext)) continue;
 
-    if (roots.length === 0) { out.push(f); continue; }
-    const inRoot = roots.some(r => f.path === r || f.path.startsWith(r + "/"));
+    if (roots.length === 0) {
+      out.push(f);
+      continue;
+    }
+    const inRoot = roots.some(
+      (r) => f.path === r || f.path.startsWith(r + "/"),
+    );
     if (inRoot) out.push(f);
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
- * Erstellt eine Library-Struktur entweder:
- * - unterhalb eines Root-Ordners (empfohlen) oder
- * - für eine gegebene Liste von Top-Level-Ordnern (Legacy).
+ * Build a library model either:
+ * - under a single root folder (recommended), or
+ * - from an explicit list of top-level folders (legacy).
  */
-export function buildLibrary(app: App, opts: {
-  rootFolder?: string;
-  foldersLegacy?: string[];
-  exts: string[];
-  includeRootFiles?: boolean;
-}): LibraryModel {
+export function buildLibrary(
+  app: App,
+  opts: {
+    rootFolder?: string;
+    foldersLegacy?: string[];
+    exts: string[];
+    includeRootFiles?: boolean;
+  },
+): LibraryModel {
   if (opts.rootFolder && opts.rootFolder.trim()) {
-    return buildLibraryFromRoot(app, opts.rootFolder, opts.exts, !!opts.includeRootFiles);
+    return buildLibraryFromRoot(
+      app,
+      opts.rootFolder,
+      opts.exts,
+      !!opts.includeRootFiles,
+    );
   }
   const folders = (opts.foldersLegacy ?? []).filter(Boolean);
   return buildLibraryFromFolders(app, folders, opts.exts);
 }
 
-function buildLibraryFromRoot(app: App, rootFolder: string, extensions: string[], includeRootFiles: boolean): LibraryModel {
+function buildLibraryFromRoot(
+  app: App,
+  rootFolder: string,
+  extensions: string[],
+  includeRootFiles: boolean,
+): LibraryModel {
   const root = normalizeFolder(rootFolder);
   const top = listSubfolders(app, root);
-  const exts = new Set(extensions.map(e => e.toLowerCase().replace(/^\./, "")));
+  const exts = new Set(
+    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
+  );
 
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: TFile[] = [];
 
-  // Optional: Dateien direkt im Root
+  // Optionally include files directly in the root folder
   if (includeRootFiles) {
     const rootSingles = filesDirectlyIn(app, root, exts);
     allSingles.push(...rootSingles);
@@ -88,32 +119,46 @@ function buildLibraryFromRoot(app: App, rootFolder: string, extensions: string[]
 
   for (const folder of top) {
     const files = filesDirectlyIn(app, folder, exts);
-    const playlists = directChildPlaylists(app, folder, exts);
+    const { playlists, ambienceSingles } =
+      directChildPlaylistsAndAmbienceSingles(app, folder, exts);
 
-    byFolder[folder] = { folder, files, playlists };
-    allSingles.push(...files);
+    const combinedSingles = [...files, ...ambienceSingles];
+    byFolder[folder] = { folder, files: combinedSingles, playlists };
+    allSingles.push(...combinedSingles);
   }
 
   return { rootFolder: root, topFolders: top, byFolder, allSingles };
 }
 
-function buildLibraryFromFolders(app: App, folders: string[], extensions: string[]): LibraryModel {
-  const exts = new Set(extensions.map(e => e.toLowerCase().replace(/^\./, "")));
-  const top = folders.map(f => normalizeFolder(f)).filter(Boolean);
+function buildLibraryFromFolders(
+  app: App,
+  folders: string[],
+  extensions: string[],
+): LibraryModel {
+  const exts = new Set(
+    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
+  );
+  const top = folders.map((f) => normalizeFolder(f)).filter(Boolean);
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: TFile[] = [];
 
   for (const folder of top) {
     const files = filesDirectlyIn(app, folder, exts);
-    const playlists = directChildPlaylists(app, folder, exts);
-    byFolder[folder] = { folder, files, playlists };
-    allSingles.push(...files);
+    const { playlists, ambienceSingles } =
+      directChildPlaylistsAndAmbienceSingles(app, folder, exts);
+    const combinedSingles = [...files, ...ambienceSingles];
+    byFolder[folder] = { folder, files: combinedSingles, playlists };
+    allSingles.push(...combinedSingles);
   }
 
   return { rootFolder: undefined, topFolders: top, byFolder, allSingles };
 }
 
-function filesDirectlyIn(app: App, folderPath: string, exts: Set<string>): TFile[] {
+function filesDirectlyIn(
+  app: App,
+  folderPath: string,
+  exts: Set<string>,
+): TFile[] {
   const af = app.vault.getAbstractFileByPath(folderPath);
   if (!(af instanceof TFolder)) return [];
   const out: TFile[] = [];
@@ -127,16 +172,41 @@ function filesDirectlyIn(app: App, folderPath: string, exts: Set<string>): TFile
   return out;
 }
 
-function directChildPlaylists(app: App, folderPath: string, exts: Set<string>): PlaylistInfo[] {
+/**
+ * Treat direct subfolders as playlists, with a special case for "Ambience":
+ * - Subfolders named "Ambience" / "ambience" are NOT treated as playlists,
+ *   but their audio files are merged into the parent's singles instead.
+ */
+function directChildPlaylistsAndAmbienceSingles(
+  app: App,
+  folderPath: string,
+  exts: Set<string>,
+): { playlists: PlaylistInfo[]; ambienceSingles: TFile[] } {
   const af = app.vault.getAbstractFileByPath(folderPath);
-  if (!(af instanceof TFolder)) return [];
-  const subs = af.children.filter((c): c is TFolder => c instanceof TFolder);
-  const out: PlaylistInfo[] = [];
+  if (!(af instanceof TFolder))
+    return { playlists: [], ambienceSingles: [] };
+
+  const subs = af.children.filter(
+    (c): c is TFolder => c instanceof TFolder,
+  );
+  const playlists: PlaylistInfo[] = [];
+  const ambienceSingles: TFile[] = [];
+
   for (const sub of subs) {
+    const isAmbience =
+      sub.name.toLowerCase() === AMBIENCE_FOLDER_NAME.toLowerCase();
+
     const tracks = collectAudioRecursive(sub, exts);
     if (tracks.length === 0) continue;
+
+    if (isAmbience) {
+      // Ambience folder: treat tracks as singles of the parent
+      ambienceSingles.push(...tracks);
+      continue;
+    }
+
     const cover = findCoverImage(sub);
-    out.push({
+    playlists.push({
       path: sub.path,
       name: sub.name,
       parent: folderPath,
@@ -144,8 +214,10 @@ function directChildPlaylists(app: App, folderPath: string, exts: Set<string>): 
       cover,
     });
   }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return out;
+
+  playlists.sort((a, b) => a.name.localeCompare(b.name));
+  ambienceSingles.sort((a, b) => a.path.localeCompare(b.path));
+  return { playlists, ambienceSingles };
 }
 
 function collectAudioRecursive(folder: TFolder, exts: Set<string>): TFile[] {
@@ -166,20 +238,36 @@ function collectAudioRecursive(folder: TFolder, exts: Set<string>): TFile[] {
 }
 
 function findCoverImage(folder: TFolder): TFile | undefined {
-  // 1) cover.xxx bevorzugen
+  // 1) Prefer a cover.xxx file
   for (const ext of IMG_EXTS) {
-    const cand = folder.children.find(ch => ch instanceof TFile && ch.name.toLowerCase() === `cover.${ext}`);
+    const cand = folder.children.find(
+      (ch) =>
+        ch instanceof TFile &&
+        ch.name.toLowerCase() === `cover.${ext}`,
+    );
     if (cand instanceof TFile) return cand;
   }
-  // 2) sonst erstes Bild
-  const imgs = folder.children.filter((ch): ch is TFile => ch instanceof TFile && IMG_EXTS.includes(ch.extension.toLowerCase()));
+  // 2) Otherwise, use the first image file in the folder
+  const imgs = folder.children.filter(
+    (ch): ch is TFile =>
+      ch instanceof TFile &&
+      !!ch.extension &&
+      IMG_EXTS.includes(ch.extension.toLowerCase()),
+  );
   imgs.sort((a, b) => a.name.localeCompare(b.name));
   return imgs[0];
 }
 
-export function findAudioFilesUnderRoot(app: App, rootFolder: string, extensions: string[], includeRootFiles = false): TFile[] {
+export function findAudioFilesUnderRoot(
+  app: App,
+  rootFolder: string,
+  extensions: string[],
+  includeRootFiles = false,
+): TFile[] {
   const root = normalizeFolder(rootFolder);
-  const exts = new Set(extensions.map(e => e.toLowerCase().replace(/^\./, "")));
+  const exts = new Set(
+    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
+  );
   const out: TFile[] = [];
 
   for (const f of app.vault.getAllLoadedFiles()) {
@@ -199,5 +287,6 @@ export function findAudioFilesUnderRoot(app: App, rootFolder: string, extensions
 }
 
 function normalizeFolder(p: string): string {
-  return (p || "").replace(/^\/+|\/+$/g, "");
+  if (!p) return "";
+  return normalizePath(p);
 }
