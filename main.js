@@ -405,11 +405,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
-        if (e.reason === "ended") {
-          const pPath = this.playIdToPlaylist.get(e.id);
-          if (pPath) {
-            void this.onTrackEndedNaturally(pPath);
-          }
+        const playlistPath = this.playIdToPlaylist.get(e.id);
+        if (playlistPath && e.reason === "ended") {
+          void this.onTrackEndedNaturally(playlistPath);
         }
         if (e.id) this.playIdToPlaylist.delete(e.id);
       }
@@ -426,15 +424,20 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     return {
       folderA: this.state.folderA,
       folderB: this.state.folderB,
+      folderC: this.state.folderC,
+      folderD: this.state.folderD,
       activeSlot: this.state.activeSlot ?? "A"
-      // legacy "folder" speichern wir nicht mehr
+      // legacy "folder" is no longer saved
     };
   }
   async setState(state) {
     const next = {
       folderA: state.folderA,
       folderB: state.folderB,
-      activeSlot: state.activeSlot
+      folderC: state.folderC,
+      folderD: state.folderD,
+      activeSlot: state.activeSlot,
+      folder: state.folder
     };
     const legacyFolder = state.folder;
     if (!next.folderA && !next.folderB && legacyFolder) {
@@ -458,24 +461,34 @@ var SoundboardView = class extends import_obsidian3.ItemView {
   }
   getActiveFolderPath() {
     const slot = this.state.activeSlot ?? "A";
-    return slot === "A" ? this.state.folderA ?? "" : this.state.folderB ?? "";
+    if (slot === "A") return this.state.folderA ?? "";
+    if (slot === "B") return this.state.folderB ?? "";
+    if (slot === "C") return this.state.folderC ?? "";
+    return this.state.folderD ?? "";
   }
   render() {
     const { contentEl } = this;
     contentEl.empty();
+    const library = this.library;
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
-    const rowTop = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
-    const rowBottom = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
-    const topFolders = this.library?.topFolders ?? [];
-    const rootFolder = this.library?.rootFolder;
-    const rootRegex = rootFolder != null ? new RegExp(
+    const rowFolders1 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    let rowFolders2 = null;
+    if (this.plugin.settings.toolbarFourFolders) {
+      rowFolders2 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    }
+    const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    const topFolders = library?.topFolders ?? [];
+    const rootFolder = library?.rootFolder;
+    const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(
       `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`
     ) : null;
     const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
     const folderA = this.state.folderA ?? "";
     const folderB = this.state.folderB ?? "";
+    const folderC = this.state.folderC ?? "";
+    const folderD = this.state.folderD ?? "";
     const activeSlot = this.state.activeSlot ?? "A";
-    const createFolderSelect = (parent, currentValue, slot) => {
+    const createFolderSelectTwo = (parent, currentValue, slot) => {
       const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
       const select = wrap.createEl("select");
       select.createEl("option", { text: "All folders", value: "" });
@@ -497,28 +510,81 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       };
       return select;
     };
-    createFolderSelect(rowTop, folderA, "A");
-    const switchBtn = rowTop.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-      attr: { type: "button", "aria-label": "Switch folder view" },
-      text: "\u21C4"
-    });
-    switchBtn.onclick = async () => {
-      const current = this.state.activeSlot ?? "A";
-      const nextSlot = current === "A" ? "B" : "A";
-      this.state.activeSlot = nextSlot;
-      await this.saveViewState();
-      this.render();
+    const createFolderSlotFour = (parent, currentValue, slot, goLeft) => {
+      const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
+      if (activeSlot === slot) wrap.addClass("active");
+      let select;
+      let goBtn;
+      if (goLeft) {
+        goBtn = wrap.createEl("button", {
+          cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
+          attr: { type: "button", "aria-label": "Show this folder" }
+        });
+        goBtn.textContent = "Go";
+        select = wrap.createEl("select");
+      } else {
+        select = wrap.createEl("select");
+        goBtn = wrap.createEl("button", {
+          cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
+          attr: { type: "button", "aria-label": "Show this folder" }
+        });
+        goBtn.textContent = "Go";
+      }
+      select.createEl("option", { text: "All folders", value: "" });
+      for (const f of topFolders) {
+        select.createEl("option", {
+          text: makeLabel(f),
+          value: f
+        });
+      }
+      select.value = currentValue || "";
+      select.onchange = async () => {
+        const v = select.value || void 0;
+        if (slot === "A") this.state.folderA = v;
+        else if (slot === "B") this.state.folderB = v;
+        else if (slot === "C") this.state.folderC = v;
+        else this.state.folderD = v;
+        await this.saveViewState();
+      };
+      goBtn.onclick = async () => {
+        this.state.activeSlot = slot;
+        await this.saveViewState();
+        this.render();
+      };
     };
-    createFolderSelect(rowTop, folderB, "B");
-    const stopAllBtn = rowBottom.createEl("button", {
+    if (this.plugin.settings.toolbarFourFolders) {
+      createFolderSlotFour(rowFolders1, folderA, "A", false);
+      createFolderSlotFour(rowFolders1, folderB, "B", true);
+      if (rowFolders2) {
+        createFolderSlotFour(rowFolders2, folderC, "C", false);
+        createFolderSlotFour(rowFolders2, folderD, "D", true);
+      }
+    } else {
+      createFolderSelectTwo(rowFolders1, folderA, "A");
+      const switchBtn = rowFolders1.createEl("button", {
+        cls: "ttrpg-sb-icon-btn",
+        attr: { type: "button", "aria-label": "Switch folder view" },
+        text: "\u21C4"
+      });
+      switchBtn.onclick = async () => {
+        const current = this.state.activeSlot ?? "A";
+        const nextSlot = current === "A" ? "B" : "A";
+        this.state.activeSlot = nextSlot;
+        await this.saveViewState();
+        this.render();
+      };
+      createFolderSelectTwo(rowFolders1, folderB, "B");
+    }
+    const stopAllBtn = rowControls.createEl("button", {
       cls: "ttrpg-sb-stop-all",
       text: "Stop all"
     });
     stopAllBtn.onclick = () => {
-      void this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
+      void this.plugin.engine.stopAll(
+        this.plugin.settings.defaultFadeOutMs
+      );
     };
-    const masterGroup = rowBottom.createDiv({
+    const masterGroup = rowControls.createDiv({
       cls: "ttrpg-sb-slider-group"
     });
     masterGroup.createSpan({
@@ -536,7 +602,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       this.plugin.engine.setMasterVolume(v);
       void this.plugin.saveSettings();
     };
-    const ambGroup = rowBottom.createDiv({
+    const ambGroup = rowControls.createDiv({
       cls: "ttrpg-sb-slider-group"
     });
     ambGroup.createSpan({
@@ -554,24 +620,25 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       this.plugin.updateVolumesForPlayingAmbience();
       void this.plugin.saveSettings();
     };
-    const useSimple = this.plugin.settings.simpleView;
+    const activeFolder = this.getActiveFolderPath();
+    const useSimple = this.plugin.isSimpleViewForFolder(activeFolder);
     const container = contentEl.createDiv({
       cls: useSimple ? "ttrpg-sb-simple-list" : "ttrpg-sb-grid"
     });
-    if (!this.library) {
+    if (!library) {
       container.createDiv({ text: "No files found. Check settings." });
       return;
     }
-    const folder = this.getActiveFolderPath();
+    const folder = activeFolder;
     if (!folder) {
-      for (const file of this.library.allSingles) {
+      for (const file of library.allSingles) {
         if (useSimple) this.renderSingleRow(container, file);
         else this.renderSingleCard(container, file);
       }
       this.updatePlayingVisuals();
       return;
     }
-    const content = this.library.byFolder[folder];
+    const content = library.byFolder[folder];
     if (!content) {
       container.createDiv({ text: "Folder contents not found." });
       return;
@@ -678,12 +745,10 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     inlineVol.max = "1";
     inlineVol.step = "0.01";
     inlineVol.value = String(pref.volume ?? 1);
+    this.plugin.registerVolumeSliderForPath(file.path, inlineVol);
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      pref.volume = v;
-      this.plugin.setSoundPref(file.path, pref);
-      this.plugin.applyEffectiveVolumeForSingle(file.path, v);
-      void this.plugin.saveSettings();
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
     const gearPerBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn push-right"
@@ -760,12 +825,10 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     inlineVol.max = "1";
     inlineVol.step = "0.01";
     inlineVol.value = String(pref.volume ?? 1);
+    this.plugin.registerVolumeSliderForPath(file.path, inlineVol);
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      pref.volume = v;
-      this.plugin.setSoundPref(file.path, pref);
-      this.plugin.applyEffectiveVolumeForSingle(file.path, v);
-      void this.plugin.saveSettings();
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
     const gearPerBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn push-right"
@@ -1118,10 +1181,12 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     volSlider.min = "0";
     volSlider.max = "1";
     volSlider.step = "0.01";
-    volSlider.value = "1";
+    const pref = this.plugin.getSoundPref(path);
+    volSlider.value = String(pref.volume ?? 1);
+    this.plugin.registerVolumeSliderForPath(path, volSlider);
     volSlider.oninput = () => {
       const v = Number(volSlider.value);
-      this.plugin.applyEffectiveVolumeForSingle(path, v);
+      this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
     };
   }
 };
@@ -1139,8 +1204,10 @@ var DEFAULT_SETTINGS = {
   masterVolume: 1,
   ambienceVolume: 1,
   simpleView: false,
+  folderViewModes: {},
   tileHeightPx: 100,
-  noteIconSizePx: 40
+  noteIconSizePx: 40,
+  toolbarFourFolders: false
 };
 var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
@@ -1176,9 +1243,7 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.plugin.rescan();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Allowed extensions").setDesc(
-      "E.g., mp3, ogg, wav, m4a, flac."
-    ).addText(
+    new import_obsidian5.Setting(containerEl).setName("Allowed extensions").setDesc("E.g., mp3, ogg, wav, m4a, flac.").addText(
       (ti) => ti.setValue(this.plugin.settings.extensions.join(", ")).onChange((v) => {
         this.plugin.settings.extensions = v.split(",").map((s) => s.trim().replace(/^\./, "")).filter(Boolean);
         void this.plugin.saveSettings();
@@ -1214,8 +1279,17 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     new import_obsidian5.Setting(containerEl).setName("Appearance").setHeading();
-    new import_obsidian5.Setting(containerEl).setName("Simple list view").setDesc(
-      "Show sounds as a simple one-column list instead of a tile grid."
+    new import_obsidian5.Setting(containerEl).setName("Four pinned folder slots").setDesc(
+      "If enabled, show four folder dropdowns in the soundboard toolbar (two rows) instead of two with a switch button."
+    ).addToggle(
+      (tg) => tg.setValue(this.plugin.settings.toolbarFourFolders).onChange((v) => {
+        this.plugin.settings.toolbarFourFolders = v;
+        void this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Simple list view (global default)").setDesc(
+      "Global default: if no per-folder override exists, folders are shown either as grid or simple list."
     ).addToggle(
       (tg) => tg.setValue(this.plugin.settings.simpleView).onChange((v) => {
         this.plugin.settings.simpleView = v;
@@ -1223,6 +1297,43 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.plugin.refreshViews();
       })
     );
+    new import_obsidian5.Setting(containerEl).setName("Per-folder view mode").setHeading();
+    containerEl.createEl("p", {
+      text: "For each folder you can override the global default: inherit, grid, or simple list."
+    });
+    const lib = this.plugin.library;
+    const topFolders = lib?.topFolders ?? [];
+    const rootFolder = lib?.rootFolder;
+    const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(
+      `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`
+    ) : null;
+    const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
+    if (topFolders.length === 0) {
+      containerEl.createEl("p", {
+        text: "No top-level folders detected yet. Make sure your root folder exists and contains subfolders."
+      });
+    } else {
+      for (const folderPath of topFolders) {
+        const label = makeLabel(folderPath);
+        const map = this.plugin.settings.folderViewModes ?? {};
+        const override = map[folderPath];
+        const setting = new import_obsidian5.Setting(containerEl).setName(label).setDesc(folderPath);
+        const globalIsSimple = this.plugin.settings.simpleView;
+        const inheritLabel = globalIsSimple ? "Inherit (simple list)" : "Inherit (grid)";
+        setting.addDropdown((dd) => {
+          dd.addOption("inherit", inheritLabel);
+          dd.addOption("grid", "Grid");
+          dd.addOption("simple", "Simple list");
+          const current = override ?? "inherit";
+          dd.setValue(current);
+          dd.onChange((val) => {
+            if (val === "inherit" || val === "grid" || val === "simple") {
+              this.plugin.setFolderViewMode(folderPath, val);
+            }
+          });
+        });
+      }
+    }
     new import_obsidian5.Setting(containerEl).setName("Tile height (px)").setDesc("Adjust thumbnail tile height for the grid.").addSlider(
       (s) => s.setLimits(30, 300, 1).setValue(this.plugin.settings.tileHeightPx).onChange((v) => {
         this.plugin.settings.tileHeightPx = v;
@@ -1230,9 +1341,7 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Note button icon size (px)").setDesc(
-      "Height of images used in note buttons."
-    ).addSlider(
+    new import_obsidian5.Setting(containerEl).setName("Note button icon size (px)").setDesc("Height of images used in note buttons.").addSlider(
       (s) => s.setLimits(16, 128, 1).setValue(this.plugin.settings.noteIconSizePx).onChange((v) => {
         this.plugin.settings.noteIconSizePx = v;
         this.plugin.applyCssVars();
@@ -1391,6 +1500,8 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
     this.library = { topFolders: [], byFolder: {}, allSingles: [] };
     // Note buttons inside markdown documents
     this.noteButtons = /* @__PURE__ */ new Set();
+    // Registry of volume sliders per file path (soundboard view + now playing)
+    this.volumeSliders = /* @__PURE__ */ new Map();
     this.rescanTimer = null;
   }
   async onload() {
@@ -1475,6 +1586,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
     void this.engine?.stopAll(0);
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
+    this.volumeSliders.clear();
   }
   // ===== CSS helper =====
   applyCssVars() {
@@ -1636,6 +1748,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
   }
   /**
    * Adjust volume for all currently playing tracks inside a playlist folder.
+   * This does NOT change any saved per-sound volume preferences.
    */
   updateVolumeForPlaylistFolder(folderPath, rawVolume) {
     const playingPaths = this.engine.getPlayingFilePaths();
@@ -1645,6 +1758,76 @@ var TTRPGSoundboardPlugin = class extends import_obsidian7.Plugin {
       if (path === folderPath || path.startsWith(prefix)) {
         this.applyEffectiveVolumeForSingle(path, v);
       }
+    }
+  }
+  // ===== Simple view (grid vs list) =====
+  /**
+   * Determine whether the given folder should be shown as simple list.
+   * If there is an override in folderViewModes, that is used; otherwise the
+   * global simpleView flag is used.
+   */
+  isSimpleViewForFolder(folderPath) {
+    const key = folderPath || "";
+    const override = this.settings.folderViewModes?.[key];
+    if (override === "grid") return false;
+    if (override === "simple") return true;
+    return this.settings.simpleView;
+  }
+  /**
+   * Set view mode for a folder:
+   *  - "inherit" => remove override, fall back to global simpleView
+   *  - "grid" or "simple" => fixed mode for this folder
+   */
+  setFolderViewMode(folderPath, mode) {
+    const key = folderPath || "";
+    const map = this.settings.folderViewModes ?? {};
+    if (mode === "inherit") {
+      delete map[key];
+    } else {
+      map[key] = mode;
+    }
+    this.settings.folderViewModes = map;
+    void this.saveSettings();
+    this.refreshViews();
+  }
+  // ===== Volume slider registry (soundboard view + now playing) =====
+  registerVolumeSliderForPath(path, el) {
+    if (!path) return;
+    let set = this.volumeSliders.get(path);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.volumeSliders.set(path, set);
+    }
+    set.add(el);
+  }
+  /**
+   * Called from UI sliders when the user changes a volume.
+   * - updates the saved per-sound preference
+   * - applies the effective volume to all currently playing instances
+   * - synchronises all sliders for this path in all open views
+   */
+  setVolumeForPathFromSlider(path, rawVolume, source) {
+    const v = Math.max(0, Math.min(1, rawVolume));
+    const pref = this.getSoundPref(path);
+    pref.volume = v;
+    this.setSoundPref(path, pref);
+    this.applyEffectiveVolumeForSingle(path, v);
+    this.syncVolumeSlidersForPath(path, v, source);
+    void this.saveSettings();
+  }
+  syncVolumeSlidersForPath(path, volume, source) {
+    const set = this.volumeSliders.get(path);
+    if (!set) return;
+    for (const el of Array.from(set)) {
+      if (!el.isConnected) {
+        set.delete(el);
+        continue;
+      }
+      if (source && el === source) continue;
+      el.value = String(volume);
+    }
+    if (set.size === 0) {
+      this.volumeSliders.delete(path);
     }
   }
   // ===== Note buttons inside markdown =====

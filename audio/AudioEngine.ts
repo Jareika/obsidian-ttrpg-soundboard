@@ -97,7 +97,6 @@ export class AudioEngine {
     const arrBuf =
       bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
-    // ESLint fix: explicitly ignore the promise return value, we use the callback API
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
       void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
@@ -109,7 +108,9 @@ export class AudioEngine {
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
     const ctx = this.ctx!;
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;

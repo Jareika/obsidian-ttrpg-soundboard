@@ -11,9 +11,11 @@ export interface SoundboardSettings {
   allowOverlap: boolean;
   masterVolume: number;
   ambienceVolume: number;    // global ambience multiplier 0..1
-  simpleView: boolean;       // true = simple one-column list, false = tile grid
+  simpleView: boolean;       // global default: true = simple list
+  folderViewModes: Record<string, "grid" | "simple">; // folderPath -> mode
   tileHeightPx: number;      // tile height in px
   noteIconSizePx: number;    // max height for note button thumbnails in px
+  toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -27,8 +29,10 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   masterVolume: 1,
   ambienceVolume: 1,
   simpleView: false,
+  folderViewModes: {},
   tileHeightPx: 100,
   noteIconSizePx: 40,
+  toolbarFourFolders: false,
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -95,9 +99,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Allowed extensions")
-      .setDesc(
-        "E.g., mp3, ogg, wav, m4a, flac.",
-      )
+      .setDesc("E.g., mp3, ogg, wav, m4a, flac.")
       .addText((ti) =>
         ti
           .setValue(this.plugin.settings.extensions.join(", "))
@@ -167,9 +169,24 @@ export class SoundboardSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Appearance").setHeading();
 
     new Setting(containerEl)
-      .setName("Simple list view")
+      .setName("Four pinned folder slots")
       .setDesc(
-        "Show sounds as a simple one-column list instead of a tile grid.",
+        "If enabled, show four folder dropdowns in the soundboard toolbar (two rows) instead of two with a switch button.",
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.toolbarFourFolders)
+          .onChange((v) => {
+            this.plugin.settings.toolbarFourFolders = v;
+            void this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Simple list view (global default)")
+      .setDesc(
+        "Global default: if no per-folder override exists, folders are shown either as grid or simple list.",
       )
       .addToggle((tg) =>
         tg
@@ -180,6 +197,63 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.refreshViews();
           }),
       );
+
+    // Per-folder view config
+    new Setting(containerEl)
+      .setName("Per-folder view mode")
+      .setHeading();
+
+    containerEl.createEl("p", {
+      text: "For each folder you can override the global default: inherit, grid, or simple list.",
+    });
+
+    const lib = this.plugin.library;
+    const topFolders = lib?.topFolders ?? [];
+    const rootFolder = lib?.rootFolder;
+    const rootRegex =
+      rootFolder != null && rootFolder !== ""
+        ? new RegExp(
+            `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
+          )
+        : null;
+    const makeLabel = (f: string) =>
+      rootRegex ? f.replace(rootRegex, "") || f : f;
+
+    if (topFolders.length === 0) {
+      containerEl.createEl("p", {
+        text: "No top-level folders detected yet. Make sure your root folder exists and contains subfolders.",
+      });
+    } else {
+      for (const folderPath of topFolders) {
+        const label = makeLabel(folderPath);
+        const map = this.plugin.settings.folderViewModes ?? {};
+        const override = map[folderPath]; // "grid" | "simple" | undefined
+
+        const setting = new Setting(containerEl)
+          .setName(label)
+          .setDesc(folderPath);
+
+        const globalIsSimple = this.plugin.settings.simpleView;
+        const inheritLabel = globalIsSimple
+          ? "Inherit (simple list)"
+          : "Inherit (grid)";
+
+        setting.addDropdown((dd) => {
+          dd.addOption("inherit", inheritLabel);
+          dd.addOption("grid", "Grid");
+          dd.addOption("simple", "Simple list");
+
+          const current = override ?? "inherit";
+          dd.setValue(current);
+
+          dd.onChange((val) => {
+            if (val === "inherit" || val === "grid" || val === "simple") {
+              this.plugin.setFolderViewMode(folderPath, val);
+            }
+          });
+        });
+      }
+    }
 
     new Setting(containerEl)
       .setName("Tile height (px)")
@@ -197,9 +271,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Note button icon size (px)")
-      .setDesc(
-        "Height of images used in note buttons.",
-      )
+      .setDesc("Height of images used in note buttons.")
       .addSlider((s) =>
         s
           .setLimits(16, 128, 1)

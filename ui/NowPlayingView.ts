@@ -108,13 +108,16 @@ export default class NowPlayingView extends ItemView {
     volSlider.min = "0";
     volSlider.max = "1";
     volSlider.step = "0.01";
-    // We do not know the current effective volume here, so we start at 1
-    volSlider.value = "1";
+
+    // Use the saved per-sound volume (or 1) as starting point
+    const pref = this.plugin.getSoundPref(path);
+    volSlider.value = String(pref.volume ?? 1);
+
+    this.plugin.registerVolumeSliderForPath(path, volSlider);
 
     volSlider.oninput = () => {
       const v = Number(volSlider.value);
-      // Live-adjust volume only for this file path (no preference is stored)
-      this.plugin.applyEffectiveVolumeForSingle(path, v);
+      this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
     };
   }
 }

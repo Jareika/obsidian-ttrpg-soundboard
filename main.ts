@@ -60,6 +60,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private noteButtons = new Set<HTMLButtonElement>();
   private engineNoteUnsub?: () => void;
 
+  // Registry of volume sliders per file path (soundboard view + now playing)
+  private volumeSliders = new Map<string, Set<HTMLInputElement>>();
+
   private rescanTimer: number | null = null;
 
   async onload() {
@@ -166,6 +169,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     void this.engine?.stopAll(0);
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
+    this.volumeSliders.clear();
     // Wir lassen Leaves im Layout, damit der User das Layout behält.
   }
 
@@ -364,6 +368,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   /**
    * Adjust volume for all currently playing tracks inside a playlist folder.
+   * This does NOT change any saved per-sound volume preferences.
    */
   updateVolumeForPlaylistFolder(folderPath: string, rawVolume: number) {
     const playingPaths = this.engine.getPlayingFilePaths();
@@ -376,6 +381,98 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       if (path === folderPath || path.startsWith(prefix)) {
         this.applyEffectiveVolumeForSingle(path, v);
       }
+    }
+  }
+
+  // ===== Simple view (grid vs list) =====
+
+  /**
+   * Determine whether the given folder should be shown as simple list.
+   * If there is an override in folderViewModes, that is used; otherwise the
+   * global simpleView flag is used.
+   */
+  isSimpleViewForFolder(folderPath: string): boolean {
+    const key = folderPath || "";
+    const override = this.settings.folderViewModes?.[key];
+    if (override === "grid") return false;
+    if (override === "simple") return true;
+    return this.settings.simpleView;
+  }
+
+  /**
+   * Set view mode for a folder:
+   *  - "inherit" => remove override, fall back to global simpleView
+   *  - "grid" or "simple" => fixed mode for this folder
+   */
+  setFolderViewMode(
+    folderPath: string,
+    mode: "inherit" | "grid" | "simple",
+  ) {
+    const key = folderPath || "";
+    const map = this.settings.folderViewModes ?? {};
+    if (mode === "inherit") {
+      delete map[key];
+    } else {
+      map[key] = mode;
+    }
+    this.settings.folderViewModes = map;
+    void this.saveSettings();
+    this.refreshViews();
+  }
+
+  // ===== Volume slider registry (soundboard view + now playing) =====
+
+  registerVolumeSliderForPath(path: string, el: HTMLInputElement) {
+    if (!path) return;
+    let set = this.volumeSliders.get(path);
+    if (!set) {
+      set = new Set();
+      this.volumeSliders.set(path, set);
+    }
+    set.add(el);
+  }
+
+  /**
+   * Called from UI sliders when the user changes a volume.
+   * - updates the saved per-sound preference
+   * - applies the effective volume to all currently playing instances
+   * - synchronises all sliders for this path in all open views
+   */
+  setVolumeForPathFromSlider(
+    path: string,
+    rawVolume: number,
+    source?: HTMLInputElement,
+  ) {
+    const v = Math.max(0, Math.min(1, rawVolume));
+    const pref = this.getSoundPref(path);
+    pref.volume = v;
+    this.setSoundPref(path, pref);
+
+    this.applyEffectiveVolumeForSingle(path, v);
+    this.syncVolumeSlidersForPath(path, v, source);
+
+    void this.saveSettings();
+  }
+
+  private syncVolumeSlidersForPath(
+    path: string,
+    volume: number,
+    source?: HTMLInputElement,
+  ) {
+    const set = this.volumeSliders.get(path);
+    if (!set) return;
+
+    for (const el of Array.from(set)) {
+      if (!el.isConnected) {
+        set.delete(el);
+        continue;
+      }
+      if (source && el === source) continue;
+      el.value = String(volume);
+    }
+
+    if (set.size === 0) {
+      this.volumeSliders.delete(path);
     }
   }
 
@@ -490,8 +587,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return;
     }
 
-    // HIER die Änderung: kein "as TFile" mehr nötig,
-    // TypeScript weiß nach dem instanceof-Check, dass af ein TFile ist.
     const file = af;
 
     const pref = this.getSoundPref(path);

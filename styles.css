@@ -34,16 +34,25 @@
 
 /* Folder selects */
 .ttrpg-sb-folder-select {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex: 1 1 0;
   min-width: 140px;
 }
 
 .ttrpg-sb-folder-select select {
+  flex: 1 1 auto;
   width: 100%;
 }
 
 .ttrpg-sb-folder-select.active select {
   border-color: var(--interactive-accent);
+}
+
+/* Small "go to folder" button next to dropdowns in 4-slot mode */
+.ttrpg-sb-folder-go {
+  flex: 0 0 auto;
 }
 
 /* Slider groups (Master / Ambience) */
@@ -145,9 +154,6 @@
     var(--ttrpg-playlist-accent) 12%,
     var(--background-secondary) 88%
   );
-  /* Important change:
-     we do NOT override background-size/position here,
-     so they stay "cover" / "center" from .ttrpg-sb-tile */
   box-shadow: 0 0 0 2px
     color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
 }
@@ -313,7 +319,7 @@
   padding: 0;
   border: none;
   background: transparent;
-  height: auto;          /* remove fixed button height */
+  height: auto;
 }
 
 /* Also no filled box in playing state; highlight happens on the image */

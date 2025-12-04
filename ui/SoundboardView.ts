@@ -6,11 +6,15 @@ import { LibraryModel, PlaylistInfo } from "../util/fileDiscovery";
 
 export const VIEW_TYPE_TTRPG_SOUNDBOARD = "ttrpg-soundboard-view";
 
+type FolderSlot = "A" | "B" | "C" | "D";
+
 interface ViewState {
   folderA?: string;
   folderB?: string;
-  activeSlot?: "A" | "B";
-  // Legacy-Feld aus alten Versionen, die nur ein "folder" gespeichert haben
+  folderC?: string;
+  folderD?: string;
+  activeSlot?: FolderSlot;
+  // Legacy field from very old versions that only stored a single "folder"
   folder?: string;
 }
 
@@ -67,11 +71,9 @@ export default class SoundboardView extends ItemView {
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
         // Playlist auto-advance only when the track ends naturally
-        if (e.reason === "ended") {
-          const pPath = this.playIdToPlaylist.get(e.id);
-          if (pPath) {
-            void this.onTrackEndedNaturally(pPath);
-          }
+        const playlistPath = this.playIdToPlaylist.get(e.id);
+        if (playlistPath && e.reason === "ended") {
+          void this.onTrackEndedNaturally(playlistPath);
         }
         // Clean up id -> playlist mapping
         if (e.id) this.playIdToPlaylist.delete(e.id);
@@ -92,8 +94,10 @@ export default class SoundboardView extends ItemView {
     return {
       folderA: this.state.folderA,
       folderB: this.state.folderB,
+      folderC: this.state.folderC,
+      folderD: this.state.folderD,
       activeSlot: this.state.activeSlot ?? "A",
-      // legacy "folder" speichern wir nicht mehr
+      // legacy "folder" is no longer saved
     };
   }
 
@@ -101,10 +105,13 @@ export default class SoundboardView extends ItemView {
     const next: ViewState = {
       folderA: state.folderA,
       folderB: state.folderB,
+      folderC: state.folderC,
+      folderD: state.folderD,
       activeSlot: state.activeSlot,
+      folder: state.folder,
     };
 
-    // Migration von sehr altem ViewState, der nur "folder" kannte
+    // Migration from very old ViewState that only had "folder"
     const legacyFolder = state.folder;
     if (!next.folderA && !next.folderB && legacyFolder) {
       next.folderA = legacyFolder;
@@ -130,23 +137,35 @@ export default class SoundboardView extends ItemView {
   }
 
   private getActiveFolderPath(): string {
-    const slot = this.state.activeSlot ?? "A";
-    return slot === "A" ? this.state.folderA ?? "" : this.state.folderB ?? "";
+    const slot: FolderSlot = this.state.activeSlot ?? "A";
+    if (slot === "A") return this.state.folderA ?? "";
+    if (slot === "B") return this.state.folderB ?? "";
+    if (slot === "C") return this.state.folderC ?? "";
+    return this.state.folderD ?? "";
   }
 
   render() {
     const { contentEl } = this;
     contentEl.empty();
 
-    // ----- Toolbar -----------------------------------------------------
-    const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
-    const rowTop = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
-    const rowBottom = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    const library = this.library;
 
-    const topFolders = this.library?.topFolders ?? [];
-    const rootFolder = this.library?.rootFolder;
+    const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
+
+    // First row with folder selectors (and maybe a second row if 4 slots are enabled)
+    const rowFolders1 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    let rowFolders2: HTMLElement | null = null;
+    if (this.plugin.settings.toolbarFourFolders) {
+      rowFolders2 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+    }
+
+    // Last row: Stop all + master + ambience
+    const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
+
+    const topFolders = library?.topFolders ?? [];
+    const rootFolder = library?.rootFolder;
     const rootRegex =
-      rootFolder != null
+      rootFolder != null && rootFolder !== ""
         ? new RegExp(
             `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
           )
@@ -156,9 +175,11 @@ export default class SoundboardView extends ItemView {
 
     const folderA = this.state.folderA ?? "";
     const folderB = this.state.folderB ?? "";
-    const activeSlot = this.state.activeSlot ?? "A";
+    const folderC = this.state.folderC ?? "";
+    const folderD = this.state.folderD ?? "";
+    const activeSlot: FolderSlot = this.state.activeSlot ?? "A";
 
-    const createFolderSelect = (
+    const createFolderSelectTwo = (
       parent: HTMLElement,
       currentValue: string,
       slot: "A" | "B",
@@ -187,34 +208,107 @@ export default class SoundboardView extends ItemView {
       return select;
     };
 
-    // Top row: Folder A | Switch button | Folder B
-    createFolderSelect(rowTop, folderA, "A");
+    const createFolderSlotFour = (
+      parent: HTMLElement,
+      currentValue: string,
+      slot: FolderSlot,
+      goLeft: boolean,
+    ) => {
+      const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
+      if (activeSlot === slot) wrap.addClass("active");
 
-    const switchBtn = rowTop.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-      attr: { type: "button", "aria-label": "Switch folder view" },
-      text: "⇄",
-    });
-    switchBtn.onclick = async () => {
-      const current = this.state.activeSlot ?? "A";
-      const nextSlot: "A" | "B" = current === "A" ? "B" : "A";
-      this.state.activeSlot = nextSlot;
-      await this.saveViewState();
-      this.render();
+      let select: HTMLSelectElement;
+      let goBtn: HTMLButtonElement;
+
+      if (goLeft) {
+        // [Go][Select]
+        goBtn = wrap.createEl("button", {
+          cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
+          attr: { type: "button", "aria-label": "Show this folder" },
+        });
+        goBtn.textContent = "Go";
+
+        select = wrap.createEl("select");
+      } else {
+        // [Select][Go]
+        select = wrap.createEl("select");
+
+        goBtn = wrap.createEl("button", {
+          cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
+          attr: { type: "button", "aria-label": "Show this folder" },
+        });
+        goBtn.textContent = "Go";
+      }
+
+      select.createEl("option", { text: "All folders", value: "" });
+      for (const f of topFolders) {
+        select.createEl("option", {
+          text: makeLabel(f),
+          value: f,
+        });
+      }
+      select.value = currentValue || "";
+
+      select.onchange = async () => {
+        const v = select.value || undefined;
+        if (slot === "A") this.state.folderA = v;
+        else if (slot === "B") this.state.folderB = v;
+        else if (slot === "C") this.state.folderC = v;
+        else this.state.folderD = v;
+        await this.saveViewState();
+        // activeSlot is NOT changed here; user uses the button to jump.
+      };
+
+      goBtn.onclick = async () => {
+        this.state.activeSlot = slot;
+        await this.saveViewState();
+        this.render();
+      };
     };
 
-    createFolderSelect(rowTop, folderB, "B");
+    if (this.plugin.settings.toolbarFourFolders) {
+      // 4 slots in two rows: A,B on top – C,D below
+      // Row 1: [A: Select][Go]  [Go][Select: B]
+      createFolderSlotFour(rowFolders1, folderA, "A", false);
+      createFolderSlotFour(rowFolders1, folderB, "B", true);
+      if (rowFolders2) {
+        // Row 2: [C: Select][Go]  [Go][Select: D]
+        createFolderSlotFour(rowFolders2, folderC, "C", false);
+        createFolderSlotFour(rowFolders2, folderD, "D", true);
+      }
+    } else {
+      // Classic 2-slot toolbar with switch button
+      createFolderSelectTwo(rowFolders1, folderA, "A");
 
-    // Second row: Stop all | Master volume | Ambience volume
-    const stopAllBtn = rowBottom.createEl("button", {
+      const switchBtn = rowFolders1.createEl("button", {
+        cls: "ttrpg-sb-icon-btn",
+        attr: { type: "button", "aria-label": "Switch folder view" },
+        text: "⇄",
+      });
+      switchBtn.onclick = async () => {
+        const current: FolderSlot = this.state.activeSlot ?? "A";
+        const nextSlot: FolderSlot = current === "A" ? "B" : "A";
+        this.state.activeSlot = nextSlot;
+        await this.saveViewState();
+        this.render();
+      };
+
+      createFolderSelectTwo(rowFolders1, folderB, "B");
+    }
+
+    // ----- Controls row: Stop all + master + ambience -----
+
+    const stopAllBtn = rowControls.createEl("button", {
       cls: "ttrpg-sb-stop-all",
       text: "Stop all",
     });
     stopAllBtn.onclick = () => {
-      void this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
+      void this.plugin.engine.stopAll(
+        this.plugin.settings.defaultFadeOutMs,
+      );
     };
 
-    const masterGroup = rowBottom.createDiv({
+    const masterGroup = rowControls.createDiv({
       cls: "ttrpg-sb-slider-group",
     });
     masterGroup.createSpan({
@@ -233,7 +327,7 @@ export default class SoundboardView extends ItemView {
       void this.plugin.saveSettings();
     };
 
-    const ambGroup = rowBottom.createDiv({
+    const ambGroup = rowControls.createDiv({
       cls: "ttrpg-sb-slider-group",
     });
     ambGroup.createSpan({
@@ -254,20 +348,22 @@ export default class SoundboardView extends ItemView {
 
     // ----- Main content: simple list vs. grid --------------------------
 
-    const useSimple = this.plugin.settings.simpleView;
+    const activeFolder = this.getActiveFolderPath();
+    const useSimple = this.plugin.isSimpleViewForFolder(activeFolder);
+
     const container = contentEl.createDiv({
       cls: useSimple ? "ttrpg-sb-simple-list" : "ttrpg-sb-grid",
     });
 
-    if (!this.library) {
+    if (!library) {
       container.createDiv({ text: "No files found. Check settings." });
       return;
     }
 
-    const folder = this.getActiveFolderPath();
+    const folder = activeFolder;
     if (!folder) {
       // "All folders": show only singles from all folders (no playlists)
-      for (const file of this.library.allSingles) {
+      for (const file of library.allSingles) {
         if (useSimple) this.renderSingleRow(container, file);
         else this.renderSingleCard(container, file);
       }
@@ -275,7 +371,7 @@ export default class SoundboardView extends ItemView {
       return;
     }
 
-    const content = this.library.byFolder[folder];
+    const content = library.byFolder[folder];
     if (!content) {
       container.createDiv({ text: "Folder contents not found." });
       return;
@@ -313,7 +409,6 @@ export default class SoundboardView extends ItemView {
       return;
     }
     try {
-      // Cast entfernt: file ist bereits vom Typ TFile
       const buffer = await this.plugin.engine.loadBuffer(file);
       const dur = this.formatDuration(buffer.duration);
       this.durationCache.set(file.path, dur);
@@ -403,12 +498,12 @@ export default class SoundboardView extends ItemView {
     inlineVol.max = "1";
     inlineVol.step = "0.01";
     inlineVol.value = String(pref.volume ?? 1);
+
+    this.plugin.registerVolumeSliderForPath(file.path, inlineVol);
+
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      pref.volume = v;
-      this.plugin.setSoundPref(file.path, pref);
-      this.plugin.applyEffectiveVolumeForSingle(file.path, v);
-      void this.plugin.saveSettings();
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
 
     const gearPerBtn = controls.createEl("button", {
@@ -500,12 +595,12 @@ export default class SoundboardView extends ItemView {
     inlineVol.max = "1";
     inlineVol.step = "0.01";
     inlineVol.value = String(pref.volume ?? 1);
+
+    this.plugin.registerVolumeSliderForPath(file.path, inlineVol);
+
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      pref.volume = v;
-      this.plugin.setSoundPref(file.path, pref);
-      this.plugin.applyEffectiveVolumeForSingle(file.path, v);
-      void this.plugin.saveSettings();
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
 
     const gearPerBtn = controls.createEl("button", {
