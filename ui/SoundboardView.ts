@@ -34,12 +34,8 @@ export default class SoundboardView extends ItemView {
   playingFiles = new Set<string>();
   private unsubEngine?: () => void;
 
-  // Runtime status per playlist folder (path -> playback state)
-  private playlistStates = new Map<string, PlaylistPlayState>();
+  private playlistStates = new Map<string, PlaylistPlayState>(); // playlistPath -> state
   private playIdToPlaylist = new Map<string, string>(); // play id -> playlistPath
-
-  // Cache for formatted duration (mm:ss) per file path
-  private durationCache = new Map<string, string>();
 
   constructor(leaf: WorkspaceLeaf, plugin: TTRPGSoundboardPlugin) {
     super(leaf);
@@ -70,12 +66,12 @@ export default class SoundboardView extends ItemView {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
+
         // Playlist auto-advance only when the track ends naturally
         const playlistPath = this.playIdToPlaylist.get(e.id);
         if (playlistPath && e.reason === "ended") {
           void this.onTrackEndedNaturally(playlistPath);
         }
-        // Clean up id -> playlist mapping
         if (e.id) this.playIdToPlaylist.delete(e.id);
       }
       this.updatePlayingVisuals();
@@ -152,7 +148,7 @@ export default class SoundboardView extends ItemView {
 
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
 
-    // First row with folder selectors (and maybe a second row if 4 slots are enabled)
+    // Folder selectors (one or two rows)
     const rowFolders1 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
     let rowFolders2: HTMLElement | null = null;
     if (this.plugin.settings.toolbarFourFolders) {
@@ -167,7 +163,10 @@ export default class SoundboardView extends ItemView {
     const rootRegex =
       rootFolder != null && rootFolder !== ""
         ? new RegExp(
-            `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
+            `^${rootFolder.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&",
+            )}/?`,
           )
         : null;
     const makeLabel = (f: string) =>
@@ -268,11 +267,9 @@ export default class SoundboardView extends ItemView {
 
     if (this.plugin.settings.toolbarFourFolders) {
       // 4 slots in two rows: A,B on top – C,D below
-      // Row 1: [A: Select][Go]  [Go][Select: B]
       createFolderSlotFour(rowFolders1, folderA, "A", false);
       createFolderSlotFour(rowFolders1, folderB, "B", true);
       if (rowFolders2) {
-        // Row 2: [C: Select][Go]  [Go][Select: D]
         createFolderSlotFour(rowFolders2, folderC, "C", false);
         createFolderSlotFour(rowFolders2, folderD, "D", true);
       }
@@ -392,32 +389,6 @@ export default class SoundboardView extends ItemView {
     this.updatePlayingVisuals();
   }
 
-  // ===================== Helpers: duration =====================
-
-  private formatDuration(seconds: number): string {
-    if (!Number.isFinite(seconds) || seconds <= 0) return "";
-    const total = Math.round(seconds);
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
-  private async fillDuration(file: TFile, span: HTMLElement) {
-    const cached = this.durationCache.get(file.path);
-    if (cached != null) {
-      if (cached) span.setText(cached);
-      return;
-    }
-    try {
-      const buffer = await this.plugin.engine.loadBuffer(file);
-      const dur = this.formatDuration(buffer.duration);
-      this.durationCache.set(file.path, dur);
-      if (dur) span.setText(dur);
-    } catch {
-      this.durationCache.set(file.path, "");
-    }
-  }
-
   // ===================== Singles (grid view) =====================
 
   private renderSingleCard(container: HTMLElement, file: TFile) {
@@ -449,7 +420,8 @@ export default class SoundboardView extends ItemView {
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
         loop: !!pref.loop,
-        fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        fadeInMs:
+          pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
       });
     };
 
@@ -503,7 +475,11 @@ export default class SoundboardView extends ItemView {
 
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
+      this.plugin.setVolumeForPathFromSlider(
+        file.path,
+        v,
+        inlineVol,
+      );
     };
 
     const gearPerBtn = controls.createEl("button", {
@@ -512,7 +488,11 @@ export default class SoundboardView extends ItemView {
     setIcon(gearPerBtn, "gear");
     gearPerBtn.setAttr("aria-label", "Sound settings");
     gearPerBtn.onclick = () =>
-      new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
+      new PerSoundSettingsModal(
+        this.app,
+        this.plugin,
+        file.path,
+      ).open();
   }
 
   // ===================== Singles (simple list view) =====================
@@ -531,7 +511,10 @@ export default class SoundboardView extends ItemView {
       text: "",
     });
 
-    void this.fillDuration(file, durationEl);
+    this.plugin.requestDurationFormatted(file, (txt) => {
+      if (!durationEl.isConnected) return;
+      durationEl.setText(txt);
+    });
 
     const pref = this.plugin.getSoundPref(file.path);
     const isAmbience = this.plugin.isAmbiencePath(file.path);
@@ -547,11 +530,14 @@ export default class SoundboardView extends ItemView {
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
         loop: !!pref.loop,
-        fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        fadeInMs:
+          pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
       });
     };
 
-    const controls = row.createDiv({ cls: "ttrpg-sb-simple-controls" });
+    const controls = row.createDiv({
+      cls: "ttrpg-sb-simple-controls",
+    });
 
     const loopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
@@ -600,7 +586,11 @@ export default class SoundboardView extends ItemView {
 
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
+      this.plugin.setVolumeForPathFromSlider(
+        file.path,
+        v,
+        inlineVol,
+      );
     };
 
     const gearPerBtn = controls.createEl("button", {
@@ -609,7 +599,11 @@ export default class SoundboardView extends ItemView {
     setIcon(gearPerBtn, "gear");
     gearPerBtn.setAttr("aria-label", "Sound settings");
     gearPerBtn.onclick = () =>
-      new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
+      new PerSoundSettingsModal(
+        this.app,
+        this.plugin,
+        file.path,
+      ).open();
 
     // If this file was already playing when the row was rendered, highlight it
     if (this.playingFiles.has(file.path)) {
@@ -634,7 +628,9 @@ export default class SoundboardView extends ItemView {
   // ===================== Playlists =====================
 
   private renderPlaylistCard(container: HTMLElement, pl: PlaylistInfo) {
-    const card = container.createDiv({ cls: "ttrpg-sb-card playlist" });
+    const card = container.createDiv({
+      cls: "ttrpg-sb-card playlist",
+    });
     card.createDiv({ cls: "ttrpg-sb-title", text: pl.name });
 
     const tile = card.createEl("button", {
@@ -653,7 +649,6 @@ export default class SoundboardView extends ItemView {
 
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
-    // Previous track
     const prevBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn",
     });
@@ -663,7 +658,6 @@ export default class SoundboardView extends ItemView {
       void this.prevInPlaylist(pl);
     };
 
-    // Stop playlist
     const stopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-stop",
       text: "Stop",
@@ -673,7 +667,6 @@ export default class SoundboardView extends ItemView {
       void this.stopPlaylist(pl);
     };
 
-    // Next track
     const nextBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn",
     });
@@ -683,16 +676,18 @@ export default class SoundboardView extends ItemView {
       void this.nextInPlaylist(pl);
     };
 
-    // Playlist settings
     const gearBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn push-right",
     });
     setIcon(gearBtn, "gear");
     gearBtn.setAttr("aria-label", "Playlist settings");
     gearBtn.onclick = () =>
-      new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
+      new PlaylistSettingsModal(
+        this.app,
+        this.plugin,
+        pl.path,
+      ).open();
 
-    // Visualize playing state
     const st = this.ensurePlaylistState(pl.path);
     if (st.active) stopBtn.classList.add("playing");
   }
@@ -717,7 +712,9 @@ export default class SoundboardView extends ItemView {
       void this.startPlaylist(pl, 0);
     };
 
-    const controls = row.createDiv({ cls: "ttrpg-sb-simple-controls" });
+    const controls = row.createDiv({
+      cls: "ttrpg-sb-simple-controls",
+    });
 
     const prevBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn",
@@ -752,7 +749,11 @@ export default class SoundboardView extends ItemView {
     setIcon(gearBtn, "gear");
     gearBtn.setAttr("aria-label", "Playlist settings");
     gearBtn.onclick = () =>
-      new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
+      new PlaylistSettingsModal(
+        this.app,
+        this.plugin,
+        pl.path,
+      ).open();
 
     const st = this.ensurePlaylistState(pl.path);
     if (st.active) {
@@ -780,7 +781,7 @@ export default class SoundboardView extends ItemView {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // Ignore errors when stopping an already-stopped handle
+        // ignore errors when stopping an already-stopped handle
       }
       st.handle = undefined;
     }
@@ -824,7 +825,7 @@ export default class SoundboardView extends ItemView {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // Ignore errors when stopping an already-stopped handle
+        // ignore errors when stopping an already-stopped handle
       }
       st.handle = undefined;
     }
@@ -842,7 +843,7 @@ export default class SoundboardView extends ItemView {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // Ignore errors when stopping an already-stopped handle
+        // ignore errors when stopping an already-stopped handle
       }
       st.handle = undefined;
     }
@@ -861,13 +862,14 @@ export default class SoundboardView extends ItemView {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // Ignore errors when stopping an already-stopped handle
+        // ignore errors when stopping an already-stopped handle
       }
       st.handle = undefined;
     }
 
     const prevIndex =
-      (st.index - 1 + pl.tracks.length) % Math.max(1, pl.tracks.length);
+      (st.index - 1 + pl.tracks.length) %
+      Math.max(1, pl.tracks.length);
     await this.playPlaylistIndex(pl, prevIndex);
   }
 

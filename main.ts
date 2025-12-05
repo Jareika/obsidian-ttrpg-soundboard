@@ -18,6 +18,7 @@ import {
   SoundboardSettingTab,
 } from "./settings";
 import { LibraryModel, buildLibrary } from "./util/fileDiscovery";
+import { QuickPlayModal, QuickPlayItem } from "./ui/QuickPlayModal";
 
 interface SoundPrefs {
   loop?: boolean;
@@ -33,10 +34,23 @@ interface PlaylistPrefs {
   fadeOutMs?: number;
 }
 
+interface DurationEntry {
+  seconds: number;
+  mtime: number;
+  size: number;
+}
+
+interface DurationJob {
+  file: TFile;
+  callbacks: Set<(seconds: number) => void>;
+  loading: boolean;
+}
+
 interface PersistedData {
   settings?: SoundboardSettings;
   soundPrefs?: Record<string, SoundPrefs>;
   playlistPrefs?: Record<string, PlaylistPrefs>;
+  durations?: Record<string, DurationEntry>;
 }
 
 function hasSetLibrary(
@@ -53,6 +67,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   settings!: SoundboardSettings;
   soundPrefs: Record<string, SoundPrefs> = {};
   playlistPrefs: Record<string, PlaylistPrefs> = {};
+  durations: Record<string, DurationEntry> = {};
+
   engine!: AudioEngine;
   library: LibraryModel = { topFolders: [], byFolder: {}, allSingles: [] };
 
@@ -64,6 +80,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private volumeSliders = new Map<string, Set<HTMLInputElement>>();
 
   private rescanTimer: number | null = null;
+
+  // Duration metadata loading queue
+  private pendingDuration = new Map<string, DurationJob>();
+  private currentDurationLoads = 0;
+  private readonly maxConcurrentDurationLoads = 3;
 
   async onload() {
     await this.loadAll();
@@ -77,18 +98,18 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       this.updateNoteButtonsPlayingState();
     });
 
-    // Main soundboard view
+    // Views
     this.registerView(
       VIEW_TYPE_TTRPG_SOUNDBOARD,
       (leaf: WorkspaceLeaf) => new SoundboardView(leaf, this),
     );
 
-    // Now-playing companion view
     this.registerView(
       VIEW_TYPE_TTRPG_NOWPLAYING,
       (leaf: WorkspaceLeaf) => new NowPlayingView(leaf, this),
     );
 
+    // Ribbon + commands
     this.addRibbonIcon("music", "Open soundboard", () => {
       void this.activateView();
     });
@@ -115,7 +136,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       callback: async () => {
         const files = this.getAllAudioFilesInLibrary();
         await this.engine.preload(files);
-        new Notice(`Preloaded ${files.length} files`);
+        new Notice(`TTRPG Soundboard: preloaded ${files.length} files.`);
       },
     });
 
@@ -125,6 +146,20 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       callback: () => this.rescan(),
     });
 
+    this.addCommand({
+      id: "quick-play-sound",
+      name: "Quick play sound (modal)",
+      callback: () => {
+        const items = this.buildQuickPlayItems();
+        if (!items.length) {
+          new Notice("TTRPG Soundboard: no audio files found in library.");
+          return;
+        }
+        new QuickPlayModal(this.app, this, items).open();
+      },
+    });
+
+    // Vault events
     this.registerEvent(
       this.app.vault.on("create", () => this.rescanDebounced()),
     );
@@ -136,14 +171,28 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         "rename",
         (file: TAbstractFile, oldPath: string) => {
           if (file instanceof TFile) {
+            const newPath = file.path;
+
             const sp = this.soundPrefs[oldPath];
             if (sp) {
-              this.soundPrefs[file.path] = sp;
+              this.soundPrefs[newPath] = sp;
               delete this.soundPrefs[oldPath];
-              void this.saveSettings();
             }
+
+            const pp = this.playlistPrefs[oldPath];
+            if (pp) {
+              this.playlistPrefs[newPath] = pp;
+              delete this.playlistPrefs[oldPath];
+            }
+
+            const dur = this.durations[oldPath];
+            if (dur) {
+              this.durations[newPath] = dur;
+              delete this.durations[oldPath];
+            }
+
+            void this.saveSettings();
           }
-          // Playlist prefs for renamed folders could be migrated later if needed
           this.rescanDebounced();
         },
       ),
@@ -170,26 +219,24 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
     this.volumeSliders.clear();
-    // Wir lassen Leaves im Layout, damit der User das Layout behält.
+    // Leave existing leaves in the workspace; user keeps their layout.
   }
 
   // ===== CSS helper =====
 
   applyCssVars() {
-    // Tile height for grid thumbnails
     const h = Math.max(
       30,
-      Math.min(400, Number(this.settings.tileHeightPx || 100)),
+      Math.min(400, Number(this.settings.tileHeightPx ?? 100)),
     );
     document.documentElement.style.setProperty(
       "--ttrpg-tile-height",
       `${h}px`,
     );
 
-    // Max height for note button thumbnails
     const iconSize = Math.max(
       12,
-      Math.min(200, Number(this.settings.noteIconSizePx || 40)),
+      Math.min(200, Number(this.settings.noteIconSizePx ?? 40)),
     );
     document.documentElement.style.setProperty(
       "--ttrpg-note-icon-size",
@@ -224,7 +271,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
 
     // 2) Ensure now-playing view exists as a tab in the right dock
-    const npLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
+    const npLeaves =
+      workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
     if (!npLeaves.length) {
       const right = workspace.getRightLeaf(true);
       if (right) {
@@ -257,7 +305,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     // Now-playing views only depend on engine events, not on the library.
   }
 
-  private async rebindLeafIfNeeded(leaf: WorkspaceLeaf): Promise<void> {
+  private async rebindLeafIfNeeded(
+    leaf: WorkspaceLeaf,
+  ): Promise<void> {
     const view1 = leaf.view;
     if (hasSetLibrary(view1)) {
       view1.setLibrary(this.library);
@@ -308,6 +358,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.soundPrefs = data?.soundPrefs ?? {};
     this.playlistPrefs = data?.playlistPrefs ?? {};
+    this.durations = data?.durations ?? {};
   }
 
   async saveSettings() {
@@ -315,6 +366,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       settings: this.settings,
       soundPrefs: this.soundPrefs,
       playlistPrefs: this.playlistPrefs,
+      durations: this.durations,
     };
     await this.saveData(data);
     this.applyCssVars();
@@ -370,7 +422,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
    * Adjust volume for all currently playing tracks inside a playlist folder.
    * This does NOT change any saved per-sound volume preferences.
    */
-  updateVolumeForPlaylistFolder(folderPath: string, rawVolume: number) {
+  updateVolumeForPlaylistFolder(
+    folderPath: string,
+    rawVolume: number,
+  ) {
     const playingPaths = this.engine.getPlayingFilePaths();
     const prefix = folderPath.endsWith("/")
       ? folderPath
@@ -386,11 +441,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   // ===== Simple view (grid vs list) =====
 
-  /**
-   * Determine whether the given folder should be shown as simple list.
-   * If there is an override in folderViewModes, that is used; otherwise the
-   * global simpleView flag is used.
-   */
   isSimpleViewForFolder(folderPath: string): boolean {
     const key = folderPath || "";
     const override = this.settings.folderViewModes?.[key];
@@ -399,11 +449,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     return this.settings.simpleView;
   }
 
-  /**
-   * Set view mode for a folder:
-   *  - "inherit" => remove override, fall back to global simpleView
-   *  - "grid" or "simple" => fixed mode for this folder
-   */
   setFolderViewMode(
     folderPath: string,
     mode: "inherit" | "grid" | "simple",
@@ -476,25 +521,220 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
   }
 
+  // ===== Duration metadata (simple view) =====
+
+  /**
+   * Request a formatted duration string for a file, using a persistent cache
+   * and a small queue of HTMLAudio metadata loaders.
+   */
+  requestDurationFormatted(file: TFile, cb: (text: string) => void) {
+    const seconds = this.getCachedDurationSeconds(file);
+    if (seconds != null) {
+      cb(this.formatDuration(seconds));
+      return;
+    }
+
+    const path = file.path;
+    let job = this.pendingDuration.get(path);
+    const wrapped = (secs: number) => {
+      cb(this.formatDuration(secs));
+    };
+
+    if (!job) {
+      job = {
+        file,
+        callbacks: new Set<(seconds: number) => void>(),
+        loading: false,
+      };
+      this.pendingDuration.set(path, job);
+    }
+    job.callbacks.add(wrapped);
+
+    this.startNextDurationJobs();
+  }
+
+  private getCachedDurationSeconds(file: TFile): number | null {
+    const entry = this.durations[file.path];
+    if (!entry) return null;
+    const stat = file.stat;
+    if (!stat) return null;
+    if (entry.mtime === stat.mtime && entry.size === stat.size) {
+      return entry.seconds;
+    }
+    return null;
+  }
+
+  private startNextDurationJobs() {
+    if (this.currentDurationLoads >= this.maxConcurrentDurationLoads) {
+      return;
+    }
+
+    const entries = Array.from(this.pendingDuration.entries());
+    for (const [path, job] of entries) {
+      if (this.currentDurationLoads >= this.maxConcurrentDurationLoads) {
+        break;
+      }
+      if (job.loading) continue;
+
+      job.loading = true;
+      this.currentDurationLoads++;
+
+      void this.loadDurationWithHtmlAudio(job.file)
+        .then((seconds) => {
+          const stat = job.file.stat;
+          if (stat) {
+            this.durations[path] = {
+              seconds,
+              mtime: stat.mtime,
+              size: stat.size,
+            };
+          }
+
+          for (const cb of job.callbacks) {
+            try {
+              cb(seconds);
+            } catch {
+              // ignore callback errors
+            }
+          }
+          job.callbacks.clear();
+          void this.saveSettings();
+        })
+        .catch(() => {
+          for (const cb of job.callbacks) {
+            try {
+              cb(0);
+            } catch {
+              // ignore callback errors
+            }
+          }
+          job.callbacks.clear();
+        })
+        .finally(() => {
+          this.pendingDuration.delete(path);
+          this.currentDurationLoads--;
+          this.startNextDurationJobs();
+        });
+    }
+  }
+
+  private async loadDurationWithHtmlAudio(file: TFile): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      try {
+        const audio = new Audio();
+        audio.preload = "metadata";
+        audio.src = this.app.vault.getResourcePath(file);
+
+        const cleanup = () => {
+          audio.onloadedmetadata = null;
+          audio.onerror = null;
+          audio.src = "";
+        };
+
+        audio.onloadedmetadata = () => {
+          const secs = Number.isFinite(audio.duration)
+            ? audio.duration
+            : 0;
+          cleanup();
+          resolve(secs);
+        };
+
+        audio.onerror = () => {
+          cleanup();
+          reject(new Error("Failed to load audio metadata"));
+        };
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  private formatDuration(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    const total = Math.round(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  // ===== Quick-play modal helpers =====
+
+  buildQuickPlayItems(): QuickPlayItem[] {
+    const files = this.getAllAudioFilesInLibrary().slice();
+    files.sort((a, b) => a.path.localeCompare(b.path));
+
+    const byName = new Map<string, QuickPlayItem>();
+
+    for (const file of files) {
+      const name = file.basename;
+      if (byName.has(name)) continue;
+
+      const context = this.buildContextForFile(file);
+      byName.set(name, {
+        file,
+        label: name,
+        context,
+      });
+    }
+
+    const items = Array.from(byName.values());
+    items.sort((a, b) => {
+      const byLabel = a.label.localeCompare(b.label);
+      if (byLabel !== 0) return byLabel;
+      return a.context.localeCompare(b.context);
+    });
+    return items;
+  }
+
+  private buildContextForFile(file: TFile): string {
+    const path = file.path;
+    const root = this.library.rootFolder;
+    let rel = path;
+
+    if (root && (path === root || path.startsWith(root + "/"))) {
+      rel = path.slice(root.length + 1);
+    }
+
+    const lastSlash = rel.lastIndexOf("/");
+    const folderPart = lastSlash >= 0 ? rel.slice(0, lastSlash) : "";
+    return folderPart || "(root)";
+  }
+
+  async playFromQuickPicker(file: TFile) {
+    const path = file.path;
+    const pref = this.getSoundPref(path);
+    const isAmb = this.isAmbiencePath(path);
+    const baseVol = pref.volume ?? 1;
+    const effective =
+      baseVol * (isAmb ? this.settings.ambienceVolume : 1);
+    const fadeInMs =
+      pref.fadeInMs != null
+        ? pref.fadeInMs
+        : this.settings.defaultFadeInMs;
+
+    if (!this.settings.allowOverlap) {
+      await this.engine.stopByFile(file, 0);
+    }
+
+    await this.engine.play(file, {
+      volume: effective,
+      loop: !!pref.loop,
+      fadeInMs,
+    });
+  }
+
   // ===== Note buttons inside markdown =====
 
   /**
    * Transform markdown patterns like:
-   *   Play [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg)
-   *   Play [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg "thumbs/rain.png")
+   *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg)
+   *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg "thumbs/rain.png")
    * into clickable buttons that trigger playback.
-   *
-   * We do NOT rely on Obsidian turning this into <a> tags, because in some
-   * cases it keeps the markdown as plain text. Instead we scan text nodes
-   * and replace the matching parts with <button> elements.
    */
   private processNoteButtons(root: HTMLElement) {
-    // Pattern:
-    // [label](ttrpg-sound:path "optional/thumbnail.png")
     const pattern =
       /\[([^\]]+)\]\(ttrpg-sound:([^")]+)(?:\s+"([^"]+)")?\)/g;
 
-    // Collect all text nodes that mention "ttrpg-sound:"
     const walker = document.createTreeWalker(
       root,
       NodeFilter.SHOW_TEXT,
@@ -529,29 +769,26 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           frag.appendChild(document.createTextNode(before));
         }
 
-        const path = rawPath.replace(/^\/+/, ""); // normalize leading slashes
+        const path = rawPath.replace(/^\/+/, "");
         const button = document.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
 
         const thumbPath = thumbPathRaw?.trim();
         if (thumbPath) {
-          // Try to load thumbnail from vault
-          const af = this.app.vault.getAbstractFileByPath(thumbPath);
+          const af =
+            this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof TFile) {
             const img = document.createElement("img");
             img.src = this.app.vault.getResourcePath(af);
             img.alt = label;
             button.appendChild(img);
             button.title = label;
-            // Mark as thumbnail-style button (image only)
             button.classList.add("ttrpg-sb-note-thumb");
           } else {
-            // Fallback: no such file, just show label text
             button.textContent = label;
           }
         } else {
-          // No thumbnail specified: plain text button
           button.textContent = label;
         }
 
@@ -583,12 +820,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private async handleNoteButtonClick(path: string) {
     const af = this.app.vault.getAbstractFileByPath(path);
     if (!(af instanceof TFile)) {
-      new Notice(`TTRPG Soundboard: file not found: ${path}`);
+      new Notice(
+        `TTRPG Soundboard: file not found: ${path}`,
+      );
       return;
     }
 
     const file = af;
-
     const pref = this.getSoundPref(path);
     const isAmb = this.isAmbiencePath(path);
     const baseVol = pref.volume ?? 1;
@@ -598,20 +836,19 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const playing = new Set(this.engine.getPlayingFilePaths());
 
     if (playing.has(path)) {
-      // Toggle: if this sound is already playing, stop all instances of it
       await this.engine.stopByFile(
         file,
         pref.fadeOutMs ?? this.settings.defaultFadeOutMs,
       );
     } else {
-      // Start playback, respecting allowOverlap for this file
       if (!this.settings.allowOverlap) {
         await this.engine.stopByFile(file, 0);
       }
       await this.engine.play(file, {
         volume: effective,
         loop: !!pref.loop,
-        fadeInMs: pref.fadeInMs ?? this.settings.defaultFadeInMs,
+        fadeInMs:
+          pref.fadeInMs ?? this.settings.defaultFadeInMs,
       });
     }
 
@@ -623,7 +860,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const playing = new Set(this.engine.getPlayingFilePaths());
 
     for (const btn of Array.from(this.noteButtons)) {
-      // Drop buttons that are no longer attached to the DOM
       if (!btn.isConnected) {
         this.noteButtons.delete(btn);
         continue;

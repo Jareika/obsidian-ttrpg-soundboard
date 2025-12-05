@@ -34,6 +34,23 @@ A flexible soundboard plugin for Obsidian — ideal for tabletop RPG sessions, a
     - Buttons: **Restore defaults · Save · Cancel**  
   - Volume changes apply **immediately** to currently playing instances; Cancel restores the original live volume.
 
+### Quick Play Command (Global Sound Search)
+
+The plugin provides a command to quickly play any sound in your library without opening the soundboard view.
+
+- **Command name:** `Quick play sound (modal)`
+- **How to use:**
+  1. Open the Command Palette (`Ctrl+P` / `Cmd+P`).
+  2. Run **Quick play sound (modal)**.
+  3. Start typing the title of a sound (searches in both title and folder path).
+  4. Press **Enter** to play the selected sound.
+
+- **Duplicates by name are hidden:**  
+  If the same audio file name exists in multiple folders (for example, `Desert Campfire` in `Desert/` and in `Camp/`), it is shown only **once** in the quick‑play list. The first match (by path) is used for playback.
+
+- **Hotkey support:**  
+  You can assign a keyboard shortcut under **Settings → Hotkeys → TTRPG Soundboard → Quick play sound (modal)** for even faster access.
+  
 ### 🎚️ Global Controls
 
 The toolbar at the top of the Soundboard View is sticky (stays visible while scrolling) and contains:
