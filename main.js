@@ -30,23 +30,22 @@ var AudioEngine = class {
   constructor(app) {
     this.ctx = null;
     this.masterGain = null;
+    // Small cache of decoded AudioBuffers, with a configurable upper limit in MB.
     this.buffers = /* @__PURE__ */ new Map();
+    this.bufferUsage = /* @__PURE__ */ new Map();
+    // path -> approximate bytes
+    this.totalBufferedBytes = 0;
+    this.maxCachedBytes = 512 * 1024 * 1024;
+    // default 512 MB
     this.playing = /* @__PURE__ */ new Map();
     this.masterVolume = 1;
     this.listeners = /* @__PURE__ */ new Set();
     this.app = app;
   }
+  // ===== Public API =====
   on(cb) {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
-  }
-  emit(e) {
-    this.listeners.forEach((fn) => {
-      try {
-        void fn(e);
-      } catch (e2) {
-      }
-    });
   }
   setMasterVolume(v) {
     this.masterVolume = Math.max(0, Math.min(1, v));
@@ -56,6 +55,28 @@ var AudioEngine = class {
         this.ctx.currentTime
       );
     }
+  }
+  /**
+   * Configure the upper limit of the decoded-audio cache in megabytes.
+   * 0 = disable caching completely (always decode from file, minimal RAM).
+   */
+  setCacheLimitMB(mb) {
+    const clamped = Math.max(0, mb || 0);
+    this.maxCachedBytes = clamped * 1024 * 1024;
+    if (this.maxCachedBytes === 0) {
+      this.clearBufferCache();
+    } else {
+      this.enforceCacheLimit();
+    }
+  }
+  /**
+   * Drop all cached decoded AudioBuffers.
+   * Already playing sounds keep working; only the reuse-cache is cleared.
+   */
+  clearBufferCache() {
+    this.buffers.clear();
+    this.bufferUsage.clear();
+    this.totalBufferedBytes = 0;
   }
   async ensureContext() {
     var _a;
@@ -77,15 +98,28 @@ var AudioEngine = class {
   }
   async loadBuffer(file) {
     const key = file.path;
-    if (this.buffers.has(key)) return this.buffers.get(key);
+    if (this.maxCachedBytes > 0) {
+      const cached = this.buffers.get(key);
+      if (cached) {
+        this.touchBufferKey(key);
+        return cached;
+      }
+    }
     const bin = await this.app.vault.readBinary(file);
     await this.ensureContext();
     const ctx = this.ctx;
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
     const audioBuffer = await new Promise((resolve, reject) => {
-      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
-    this.buffers.set(key, audioBuffer);
+    if (this.maxCachedBytes > 0) {
+      const approxBytes = audioBuffer.length * audioBuffer.numberOfChannels * 4;
+      this.buffers.set(key, audioBuffer);
+      this.bufferUsage.set(key, approxBytes);
+      this.totalBufferedBytes += approxBytes;
+      this.touchBufferKey(key);
+      this.enforceCacheLimit();
+    }
     return audioBuffer;
   }
   async play(file, opts = {}) {
@@ -129,6 +163,70 @@ var AudioEngine = class {
       id,
       stop: (sOpts) => this.stopById(id, sOpts)
     };
+  }
+  async stopByFile(file, fadeOutMs = 0) {
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path
+    );
+    await Promise.all(
+      targets.map((t) => this.stopById(t.id, { fadeOutMs }))
+    );
+  }
+  async stopAll(fadeOutMs = 0) {
+    const ids = [...this.playing.keys()];
+    await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
+  }
+  async preload(files) {
+    for (const f of files) {
+      try {
+        await this.loadBuffer(f);
+      } catch (err) {
+        console.error("TTRPG Soundboard: preload failed", f.path, err);
+      }
+    }
+  }
+  /**
+   * Set the volume (0..1) for all currently playing instances
+   * of a given file path (this does not touch the global master gain).
+   */
+  setVolumeForPath(path, volume) {
+    if (!this.ctx) return;
+    const v = Math.max(0, Math.min(1, volume));
+    const now = this.ctx.currentTime;
+    for (const rec of this.playing.values()) {
+      if (rec.file.path === path) {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(v, now);
+      }
+    }
+  }
+  getPlayingFilePaths() {
+    const set = /* @__PURE__ */ new Set();
+    for (const v of this.playing.values()) set.add(v.file.path);
+    return [...set];
+  }
+  /**
+   * Called when the plugin unloads – closes the AudioContext and drops caches.
+   */
+  shutdown() {
+    var _a;
+    try {
+      void ((_a = this.ctx) == null ? void 0 : _a.close());
+    } catch (e) {
+    }
+    this.ctx = null;
+    this.masterGain = null;
+    this.clearBufferCache();
+    this.playing.clear();
+  }
+  // ===== Internal helpers =====
+  emit(e) {
+    this.listeners.forEach((fn) => {
+      try {
+        void fn(e);
+      } catch (e2) {
+      }
+    });
   }
   stopById(id, sOpts) {
     var _a;
@@ -175,46 +273,31 @@ var AudioEngine = class {
       }
     });
   }
-  async stopByFile(file, fadeOutMs = 0) {
-    const targets = [...this.playing.values()].filter(
-      (p) => p.file.path === file.path
-    );
-    await Promise.all(
-      targets.map((t) => this.stopById(t.id, { fadeOutMs }))
-    );
+  touchBufferKey(key) {
+    var _a;
+    const buf = this.buffers.get(key);
+    if (!buf) return;
+    const size = (_a = this.bufferUsage.get(key)) != null ? _a : 0;
+    this.buffers.delete(key);
+    this.bufferUsage.delete(key);
+    this.buffers.set(key, buf);
+    this.bufferUsage.set(key, size);
   }
-  async stopAll(fadeOutMs = 0) {
-    const ids = [...this.playing.keys()];
-    await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
-  }
-  async preload(files) {
-    for (const f of files) {
-      try {
-        await this.loadBuffer(f);
-      } catch (err) {
-        console.error("TTRPG Soundboard: preload failed", f.path, err);
-      }
+  enforceCacheLimit() {
+    var _a;
+    if (this.maxCachedBytes <= 0) {
+      this.clearBufferCache();
+      return;
     }
-  }
-  /**
-   * Set the volume (0..1) for all currently playing instances
-   * of a given file path (this does not touch the global master gain).
-   */
-  setVolumeForPath(path, volume) {
-    if (!this.ctx) return;
-    const v = Math.max(0, Math.min(1, volume));
-    const now = this.ctx.currentTime;
-    for (const rec of this.playing.values()) {
-      if (rec.file.path === path) {
-        rec.gain.gain.cancelScheduledValues(now);
-        rec.gain.gain.setValueAtTime(v, now);
-      }
+    if (this.totalBufferedBytes <= this.maxCachedBytes) return;
+    for (const key of this.buffers.keys()) {
+      if (this.totalBufferedBytes <= this.maxCachedBytes) break;
+      const size = (_a = this.bufferUsage.get(key)) != null ? _a : 0;
+      this.buffers.delete(key);
+      this.bufferUsage.delete(key);
+      this.totalBufferedBytes -= size;
     }
-  }
-  getPlayingFilePaths() {
-    const set = /* @__PURE__ */ new Set();
-    for (const v of this.playing.values()) set.add(v.file.path);
-    return [...set];
+    if (this.totalBufferedBytes < 0) this.totalBufferedBytes = 0;
   }
 };
 
@@ -1241,7 +1324,9 @@ var DEFAULT_SETTINGS = {
   folderViewModes: {},
   tileHeightPx: 100,
   noteIconSizePx: 40,
-  toolbarFourFolders: false
+  toolbarFourFolders: false,
+  maxAudioCacheMB: 512
+  // default 512 MB of decoded audio
 };
 var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
@@ -1314,6 +1399,16 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
+    new import_obsidian5.Setting(containerEl).setName("Decoded audio cache.").setDesc(
+      "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal random access memory, more decoding)."
+    ).addSlider(
+      (s) => s.setLimits(0, 2048, 16).setValue(this.plugin.settings.maxAudioCacheMB).setDynamicTooltip().onChange((v) => {
+        var _a2;
+        this.plugin.settings.maxAudioCacheMB = v;
+        (_a2 = this.plugin.engine) == null ? void 0 : _a2.setCacheLimitMB(v);
+        void this.plugin.saveSettings();
+      })
+    );
     new import_obsidian5.Setting(containerEl).setName("Appearance").setHeading();
     new import_obsidian5.Setting(containerEl).setName("Four pinned folder slots").setDesc(
       "If enabled, show four folder dropdowns in the soundboard toolbar (two rows) instead of two with a switch button."
@@ -1341,7 +1436,10 @@ var SoundboardSettingTab = class extends import_obsidian5.PluginSettingTab {
     const topFolders = (_a = lib == null ? void 0 : lib.topFolders) != null ? _a : [];
     const rootFolder = lib == null ? void 0 : lib.rootFolder;
     const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(
-      `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`
+      `^${rootFolder.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      )}/?`
     ) : null;
     const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
     if (topFolders.length === 0) {
@@ -1530,24 +1628,30 @@ function normalizeFolder(p) {
 // ui/QuickPlayModal.ts
 var import_obsidian7 = require("obsidian");
 var QuickPlayModal = class extends import_obsidian7.FuzzySuggestModal {
-  constructor(app, plugin, items) {
+  constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
-    this.items = items;
     this.setPlaceholder("Type to search sounds...");
   }
-  // All items that can be chosen in this modal
   getItems() {
-    return this.items;
+    return this.plugin.buildQuickPlayItems();
   }
-  // Text used both for fuzzy search and for display in the list
   getItemText(item) {
     if (item.context) {
       return `${item.label} \u2014 ${item.context}`;
     }
     return item.label;
   }
-  // Called when the user picks an item (Enter/Klick)
+  renderSuggestion(item, el) {
+    el.empty();
+    const nameEl = el.createDiv();
+    nameEl.textContent = item.label;
+    if (item.context) {
+      const ctxEl = el.createDiv();
+      ctxEl.addClass("mod-muted");
+      ctxEl.textContent = item.context;
+    }
+  }
   onChooseItem(item) {
     void this.plugin.playFromQuickPicker(item.file);
   }
@@ -1579,6 +1683,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     this.applyCssVars();
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
+    this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
     this.engineNoteUnsub = this.engine.on(() => {
       this.updateNoteButtonsPlayingState();
     });
@@ -1613,7 +1718,19 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
       callback: async () => {
         const files = this.getAllAudioFilesInLibrary();
         await this.engine.preload(files);
-        new import_obsidian8.Notice(`TTRPG Soundboard: preloaded ${files.length} files.`);
+        new import_obsidian8.Notice(
+          `TTRPG Soundboard: preloaded ${files.length} files.`
+        );
+      }
+    });
+    this.addCommand({
+      id: "clear-audio-cache",
+      name: "Clear decoded audio cache (free RAM)",
+      callback: () => {
+        this.engine.clearBufferCache();
+        new import_obsidian8.Notice(
+          "Cleared decoded audio cache."
+        );
       }
     });
     this.addCommand({
@@ -1627,7 +1744,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
       callback: () => {
         const items = this.buildQuickPlayItems();
         if (!items.length) {
-          new import_obsidian8.Notice("TTRPG Soundboard: no audio files found in library.");
+          new import_obsidian8.Notice(
+            "No audio files found in library."
+          );
           return;
         }
         new QuickPlayModal(this.app, this, items).open();
@@ -1676,11 +1795,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     this.rescan();
   }
   onunload() {
-    var _a, _b;
+    var _a, _b, _c;
     void ((_a = this.engine) == null ? void 0 : _a.stopAll(0));
     (_b = this.engineNoteUnsub) == null ? void 0 : _b.call(this);
     this.noteButtons.clear();
     this.volumeSliders.clear();
+    (_c = this.engine) == null ? void 0 : _c.shutdown();
   }
   // ===== CSS helper =====
   applyCssVars() {

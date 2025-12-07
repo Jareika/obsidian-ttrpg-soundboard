@@ -16,6 +16,7 @@ export interface SoundboardSettings {
   tileHeightPx: number;      // tile height in px
   noteIconSizePx: number;    // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
+  maxAudioCacheMB: number;   // upper limit for decoded-audio cache in MB (0 = no caching)
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   tileHeightPx: 100,
   noteIconSizePx: 40,
   toolbarFourFolders: false,
+  maxAudioCacheMB: 512, // default 512 MB of decoded audio
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -165,6 +167,23 @@ export class SoundboardSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName("Decoded audio cache.")
+      .setDesc(
+        "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal random access memory, more decoding).",
+      )
+      .addSlider((s) =>
+        s
+          .setLimits(0, 2048, 16)
+          .setValue(this.plugin.settings.maxAudioCacheMB)
+          .setDynamicTooltip()
+          .onChange((v) => {
+            this.plugin.settings.maxAudioCacheMB = v;
+            this.plugin.engine?.setCacheLimitMB(v);
+            void this.plugin.saveSettings();
+          }),
+      );
+
     // Appearance
     new Setting(containerEl).setName("Appearance").setHeading();
 
@@ -213,7 +232,10 @@ export class SoundboardSettingTab extends PluginSettingTab {
     const rootRegex =
       rootFolder != null && rootFolder !== ""
         ? new RegExp(
-            `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
+            `^${rootFolder.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&",
+            )}/?`,
           )
         : null;
     const makeLabel = (f: string) =>

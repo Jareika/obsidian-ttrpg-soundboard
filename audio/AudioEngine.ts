@@ -23,7 +23,13 @@ export class AudioEngine {
   private app: App;
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+
+  // Small cache of decoded AudioBuffers, with a configurable upper limit in MB.
   private buffers = new Map<string, AudioBuffer>();
+  private bufferUsage = new Map<string, number>(); // path -> approximate bytes
+  private totalBufferedBytes = 0;
+  private maxCachedBytes = 512 * 1024 * 1024; // default 512 MB
+
   private playing = new Map<
     string,
     {
@@ -41,19 +47,11 @@ export class AudioEngine {
     this.app = app;
   }
 
+  // ===== Public API =====
+
   on(cb: (e: PlaybackEvent) => void) {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
-  }
-
-  private emit(e: PlaybackEvent) {
-    this.listeners.forEach((fn) => {
-      try {
-        void fn(e);
-      } catch {
-        // Ignore listener errors so one bad listener does not break others
-      }
-    });
   }
 
   setMasterVolume(v: number) {
@@ -64,6 +62,31 @@ export class AudioEngine {
         this.ctx.currentTime,
       );
     }
+  }
+
+  /**
+   * Configure the upper limit of the decoded-audio cache in megabytes.
+   * 0 = disable caching completely (always decode from file, minimal RAM).
+   */
+  setCacheLimitMB(mb: number) {
+    const clamped = Math.max(0, mb || 0);
+    this.maxCachedBytes = clamped * 1024 * 1024;
+
+    if (this.maxCachedBytes === 0) {
+      this.clearBufferCache();
+    } else {
+      this.enforceCacheLimit();
+    }
+  }
+
+  /**
+   * Drop all cached decoded AudioBuffers.
+   * Already playing sounds keep working; only the reuse-cache is cleared.
+   */
+  clearBufferCache() {
+    this.buffers.clear();
+    this.bufferUsage.clear();
+    this.totalBufferedBytes = 0;
   }
 
   async ensureContext() {
@@ -82,14 +105,22 @@ export class AudioEngine {
       try {
         await this.ctx.resume();
       } catch {
-        // Some browsers may refuse to resume the context; ignore
+        // Some browsers may refuse to resume the context; ignore.
       }
     }
   }
 
   async loadBuffer(file: TFile): Promise<AudioBuffer> {
     const key = file.path;
-    if (this.buffers.has(key)) return this.buffers.get(key)!;
+
+    // If caching is enabled and we have a buffer, reuse it (and mark as recently used).
+    if (this.maxCachedBytes > 0) {
+      const cached = this.buffers.get(key);
+      if (cached) {
+        this.touchBufferKey(key);
+        return cached;
+      }
+    }
 
     const bin = await this.app.vault.readBinary(file);
     await this.ensureContext();
@@ -98,9 +129,19 @@ export class AudioEngine {
       bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
-    this.buffers.set(key, audioBuffer);
+
+    if (this.maxCachedBytes > 0) {
+      const approxBytes =
+        audioBuffer.length * audioBuffer.numberOfChannels * 4; // 32-bit float
+      this.buffers.set(key, audioBuffer);
+      this.bufferUsage.set(key, approxBytes);
+      this.totalBufferedBytes += approxBytes;
+      this.touchBufferKey(key);
+      this.enforceCacheLimit();
+    }
+
     return audioBuffer;
   }
 
@@ -108,9 +149,7 @@ export class AudioEngine {
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
     const ctx = this.ctx!;
-    const id = `${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -154,6 +193,80 @@ export class AudioEngine {
       id,
       stop: (sOpts?: StopOptions) => this.stopById(id, sOpts),
     };
+  }
+
+  async stopByFile(file: TFile, fadeOutMs = 0) {
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path,
+    );
+    await Promise.all(
+      targets.map((t) => this.stopById(t.id, { fadeOutMs })),
+    );
+  }
+
+  async stopAll(fadeOutMs = 0) {
+    const ids = [...this.playing.keys()];
+    await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
+  }
+
+  async preload(files: TFile[]) {
+    for (const f of files) {
+      try {
+        await this.loadBuffer(f);
+      } catch (err) {
+        console.error("TTRPG Soundboard: preload failed", f.path, err);
+      }
+    }
+  }
+
+  /**
+   * Set the volume (0..1) for all currently playing instances
+   * of a given file path (this does not touch the global master gain).
+   */
+  setVolumeForPath(path: string, volume: number) {
+    if (!this.ctx) return;
+    const v = Math.max(0, Math.min(1, volume));
+    const now = this.ctx.currentTime;
+
+    for (const rec of this.playing.values()) {
+      if (rec.file.path === path) {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(v, now);
+      }
+    }
+  }
+
+  getPlayingFilePaths(): string[] {
+    const set = new Set<string>();
+    for (const v of this.playing.values()) set.add(v.file.path);
+    return [...set];
+  }
+
+  /**
+   * Called when the plugin unloads – closes the AudioContext and drops caches.
+   */
+  shutdown() {
+    try {
+      void this.ctx?.close();
+    } catch {
+      // Ignore errors while closing the context.
+    }
+    this.ctx = null;
+    this.masterGain = null;
+    this.clearBufferCache();
+    this.playing.clear();
+  }
+
+  // ===== Internal helpers =====
+
+  private emit(e: PlaybackEvent) {
+    this.listeners.forEach((fn) => {
+      try {
+        void fn(e);
+      } catch {
+        // Ignore listener errors so one bad listener does not break others
+      }
+    });
   }
 
   private stopById(id: string, sOpts?: StopOptions): Promise<void> {
@@ -203,50 +316,34 @@ export class AudioEngine {
     });
   }
 
-  async stopByFile(file: TFile, fadeOutMs = 0) {
-    const targets = [...this.playing.values()].filter(
-      (p) => p.file.path === file.path,
-    );
-    await Promise.all(
-      targets.map((t) => this.stopById(t.id, { fadeOutMs })),
-    );
+  private touchBufferKey(key: string) {
+    const buf = this.buffers.get(key);
+    if (!buf) return;
+    const size = this.bufferUsage.get(key) ?? 0;
+
+    // Reinsert to the end so Map iteration order behaves like LRU.
+    this.buffers.delete(key);
+    this.bufferUsage.delete(key);
+    this.buffers.set(key, buf);
+    this.bufferUsage.set(key, size);
   }
 
-  async stopAll(fadeOutMs = 0) {
-    const ids = [...this.playing.keys()];
-    await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
-  }
-
-  async preload(files: TFile[]) {
-    for (const f of files) {
-      try {
-        await this.loadBuffer(f);
-      } catch (err) {
-        console.error("TTRPG Soundboard: preload failed", f.path, err);
-      }
+  private enforceCacheLimit() {
+    if (this.maxCachedBytes <= 0) {
+      this.clearBufferCache();
+      return;
     }
-  }
+    if (this.totalBufferedBytes <= this.maxCachedBytes) return;
 
-  /**
-   * Set the volume (0..1) for all currently playing instances
-   * of a given file path (this does not touch the global master gain).
-   */
-  setVolumeForPath(path: string, volume: number) {
-    if (!this.ctx) return;
-    const v = Math.max(0, Math.min(1, volume));
-    const now = this.ctx.currentTime;
-
-    for (const rec of this.playing.values()) {
-      if (rec.file.path === path) {
-        rec.gain.gain.cancelScheduledValues(now);
-        rec.gain.gain.setValueAtTime(v, now);
-      }
+    // Evict least-recently-used entries until we are under the limit.
+    for (const key of this.buffers.keys()) {
+      if (this.totalBufferedBytes <= this.maxCachedBytes) break;
+      const size = this.bufferUsage.get(key) ?? 0;
+      this.buffers.delete(key);
+      this.bufferUsage.delete(key);
+      this.totalBufferedBytes -= size;
     }
-  }
 
-  getPlayingFilePaths(): string[] {
-    const set = new Set<string>();
-    for (const v of this.playing.values()) set.add(v.file.path);
-    return [...set];
+    if (this.totalBufferedBytes < 0) this.totalBufferedBytes = 0;
   }
 }

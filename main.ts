@@ -92,6 +92,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
+    this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
 
     // Keep note buttons in sync with current playing state
     this.engineNoteUnsub = this.engine.on(() => {
@@ -136,7 +137,20 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       callback: async () => {
         const files = this.getAllAudioFilesInLibrary();
         await this.engine.preload(files);
-        new Notice(`TTRPG Soundboard: preloaded ${files.length} files.`);
+        new Notice(
+          `TTRPG Soundboard: preloaded ${files.length} files.`,
+        );
+      },
+    });
+
+    this.addCommand({
+      id: "clear-audio-cache",
+      name: "Clear decoded audio cache (free RAM)",
+      callback: () => {
+        this.engine.clearBufferCache();
+        new Notice(
+          "Cleared decoded audio cache.",
+        );
       },
     });
 
@@ -152,7 +166,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       callback: () => {
         const items = this.buildQuickPlayItems();
         if (!items.length) {
-          new Notice("TTRPG Soundboard: no audio files found in library.");
+          new Notice(
+            "No audio files found in library.",
+          );
           return;
         }
         new QuickPlayModal(this.app, this, items).open();
@@ -219,6 +235,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
     this.volumeSliders.clear();
+    this.engine?.shutdown();
     // Leave existing leaves in the workspace; user keeps their layout.
   }
 

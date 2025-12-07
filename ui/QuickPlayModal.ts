@@ -13,25 +13,17 @@ export interface QuickPlayItem {
 
 export class QuickPlayModal extends FuzzySuggestModal<QuickPlayItem> {
   private plugin: TTRPGSoundboardPlugin;
-  private items: QuickPlayItem[];
 
-  constructor(
-    app: App,
-    plugin: TTRPGSoundboardPlugin,
-    items: QuickPlayItem[],
-  ) {
+  constructor(app: App, plugin: TTRPGSoundboardPlugin) {
     super(app);
     this.plugin = plugin;
-    this.items = items;
     this.setPlaceholder("Type to search sounds...");
   }
 
-  // All items that can be chosen in this modal
   getItems(): QuickPlayItem[] {
-    return this.items;
+    return this.plugin.buildQuickPlayItems();
   }
 
-  // Text used both for fuzzy search and for display in the list
   getItemText(item: QuickPlayItem): string {
     if (item.context) {
       return `${item.label} — ${item.context}`;
@@ -39,7 +31,19 @@ export class QuickPlayModal extends FuzzySuggestModal<QuickPlayItem> {
     return item.label;
   }
 
-  // Called when the user picks an item (Enter/Klick)
+  renderSuggestion(item: QuickPlayItem, el: HTMLElement) {
+    el.empty();
+
+    const nameEl = el.createDiv();
+    nameEl.textContent = item.label;
+
+    if (item.context) {
+      const ctxEl = el.createDiv();
+      ctxEl.addClass("mod-muted");
+      ctxEl.textContent = item.context;
+    }
+  }
+
   onChooseItem(item: QuickPlayItem) {
     void this.plugin.playFromQuickPicker(item.file);
   }
