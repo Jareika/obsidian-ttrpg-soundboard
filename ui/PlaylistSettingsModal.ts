@@ -60,7 +60,7 @@ export class PlaylistSettingsModal extends Modal {
           .onChange((v) => {
             vol = v;
             // Live-adjust the volume for all currently playing tracks of this playlist
-            this.plugin.updateVolumeForPlaylistFolder(this.folderPath, vol);
+            this.plugin.updateVolumeForPlaylistFolder(this.folderPath, v);
           }),
       );
 
@@ -70,6 +70,21 @@ export class PlaylistSettingsModal extends Modal {
         tg.setValue(loop).onChange((v) => {
           loop = v;
         }),
+      );
+
+    new Setting(contentEl)
+      .setName("Insert playlist button")
+      .setDesc(
+        "Insert a Markdown button for this playlist into the active note.",
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Insert button")
+          .onClick(() => {
+            this.plugin.insertPlaylistButtonIntoActiveNote(
+              this.folderPath,
+            );
+          }),
       );
 
     new Setting(contentEl)

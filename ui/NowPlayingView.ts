@@ -1,7 +1,8 @@
 import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
 
-export const VIEW_TYPE_TTRPG_NOWPLAYING = "ttrpg-soundboard-nowplaying";
+export const VIEW_TYPE_TTRPG_NOWPLAYING =
+  "ttrpg-soundboard-nowplaying";
 
 export default class NowPlayingView extends ItemView {
   plugin: TTRPGSoundboardPlugin;
@@ -22,19 +23,20 @@ export default class NowPlayingView extends ItemView {
   }
 
   getIcon() {
-    // Use a different icon than the main soundboard view (if your theme provides it)
     return "music-2";
   }
 
   onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
 
-    // Initial sync: take all currently playing file paths from the engine
-    this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
+    this.playingPaths = new Set(
+      this.plugin.engine.getPlayingFilePaths(),
+    );
 
     this.unsubEngine = this.plugin.engine.on(() => {
-      // On every start/stop event, resync the list and re-render
-      this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
+      this.playingPaths = new Set(
+        this.plugin.engine.getPlayingFilePaths(),
+      );
       this.render();
     });
 
@@ -48,12 +50,10 @@ export default class NowPlayingView extends ItemView {
   }
 
   getState(): unknown {
-    // This view does not need a custom view state
     return {};
   }
 
   async setState(_state: unknown) {
-    // Intentionally unused; kept only to match the ItemView signature
     void _state;
     await Promise.resolve();
   }
@@ -83,7 +83,12 @@ export default class NowPlayingView extends ItemView {
       path.split("/").pop() ??
       path;
 
+    const state = this.plugin.engine.getPathPlaybackState(path);
+    const isPaused = state === "paused";
+
     const card = grid.createDiv({ cls: "ttrpg-sb-now-card" });
+    if (isPaused) card.addClass("paused");
+
     card.createDiv({ cls: "ttrpg-sb-now-title", text: name });
 
     const controls = card.createDiv({ cls: "ttrpg-sb-now-controls" });
@@ -101,6 +106,25 @@ export default class NowPlayingView extends ItemView {
       }
     };
 
+    const pauseBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-stop",
+      text: isPaused ? "Resume" : "Pause",
+    });
+    pauseBtn.onclick = async () => {
+      if (!file) return;
+      if (isPaused) {
+        await this.plugin.engine.resumeByFile(
+          file,
+          this.plugin.settings.defaultFadeInMs,
+        );
+      } else {
+        await this.plugin.engine.pauseByFile(
+          file,
+          this.plugin.settings.defaultFadeOutMs,
+        );
+      }
+    };
+
     const volSlider = controls.createEl("input", {
       type: "range",
       cls: "ttrpg-sb-inline-volume",
@@ -109,7 +133,6 @@ export default class NowPlayingView extends ItemView {
     volSlider.max = "1";
     volSlider.step = "0.01";
 
-    // Use the saved per-sound volume (or 1) as starting point
     const pref = this.plugin.getSoundPref(path);
     volSlider.value = String(pref.volume ?? 1);
 

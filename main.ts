@@ -1,4 +1,5 @@
 import {
+  MarkdownView,
   Notice,
   Plugin,
   TAbstractFile,
@@ -17,7 +18,11 @@ import {
   DEFAULT_SETTINGS,
   SoundboardSettingTab,
 } from "./settings";
-import { LibraryModel, buildLibrary } from "./util/fileDiscovery";
+import {
+  LibraryModel,
+  PlaylistInfo,
+  buildLibrary,
+} from "./util/fileDiscovery";
 import { QuickPlayModal, QuickPlayItem } from "./ui/QuickPlayModal";
 
 interface SoundPrefs {
@@ -53,6 +58,17 @@ interface PersistedData {
   durations?: Record<string, DurationEntry>;
 }
 
+interface PlaylistRuntimeState {
+  path: string;
+  indices: number[]; // selected track indices (0-based)
+  position: number; // index into indices[]
+  handle?: {
+    id: string;
+    stop: (opts?: { fadeOutMs?: number }) => Promise<void> | void;
+  };
+  active: boolean;
+}
+
 function hasSetLibrary(
   v: unknown,
 ): v is { setLibrary: (lib: LibraryModel) => void } {
@@ -72,6 +88,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   engine!: AudioEngine;
   library: LibraryModel = { topFolders: [], byFolder: {}, allSingles: [] };
 
+  // Playlist runtime state
+  private playlistStates = new Map<string, PlaylistRuntimeState>();
+  private playIdToPlaylist = new Map<string, string>();
+
   // Note buttons inside markdown documents
   private noteButtons = new Set<HTMLButtonElement>();
   private engineNoteUnsub?: () => void;
@@ -86,6 +106,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private currentDurationLoads = 0;
   private readonly maxConcurrentDurationLoads = 3;
 
+  // Remember the last active MarkdownView so we can insert buttons
+  // even if the user clicks in the soundboard sidebar.
+  private lastMarkdownView: MarkdownView | null = null;
+
   async onload() {
     await this.loadAll();
     this.applyCssVars();
@@ -94,8 +118,33 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.engine.setMasterVolume(this.settings.masterVolume);
     this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
 
-    // Keep note buttons in sync with current playing state
-    this.engineNoteUnsub = this.engine.on(() => {
+    // Track last active MarkdownView
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        const view = leaf?.view;
+        if (view instanceof MarkdownView) {
+          this.lastMarkdownView = view;
+        }
+      }),
+    );
+    const current = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (current) this.lastMarkdownView = current;
+
+    // Keep note buttons and playlist state in sync with engine events
+    this.engineNoteUnsub = this.engine.on((e) => {
+      if (e.type === "stop") {
+        const playlistPath = this.playIdToPlaylist.get(e.id);
+        if (playlistPath) {
+          this.playIdToPlaylist.delete(e.id);
+          const st = this.playlistStates.get(playlistPath);
+          if (e.reason === "ended") {
+            void this.onPlaylistTrackEndedNaturally(playlistPath);
+          } else if (st) {
+            st.handle = undefined;
+            st.active = false;
+          }
+        }
+      }
       this.updateNoteButtonsPlayingState();
     });
 
@@ -148,9 +197,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       name: "Clear decoded audio cache (free RAM)",
       callback: () => {
         this.engine.clearBufferCache();
-        new Notice(
-          "Cleared decoded audio cache.",
-        );
+        new Notice("Cleared decoded audio cache.");
       },
     });
 
@@ -166,9 +213,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       callback: () => {
         const items = this.buildQuickPlayItems();
         if (!items.length) {
-          new Notice(
-            "No audio files found in library.",
-          );
+          new Notice("No audio files found in library.");
           return;
         }
         new QuickPlayModal(this.app, this, items).open();
@@ -235,6 +280,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.engineNoteUnsub?.();
     this.noteButtons.clear();
     this.volumeSliders.clear();
+    this.playlistStates.clear();
+    this.playIdToPlaylist.clear();
     this.engine?.shutdown();
     // Leave existing leaves in the workspace; user keeps their layout.
   }
@@ -408,7 +455,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   isAmbiencePath(path: string): boolean {
     const parts = path.toLowerCase().split("/");
-    return parts.includes("ambience");
+       return parts.includes("ambience");
   }
 
   /**
@@ -740,61 +787,412 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     });
   }
 
+  // ===== Playlist runtime control (for UI + playlist note buttons) =====
+
+  isPlaylistActive(playlistPath: string): boolean {
+    const st = this.playlistStates.get(playlistPath);
+    return !!st?.active;
+  }
+
+  async startPlaylist(
+    pl: PlaylistInfo,
+    selectionIndices?: number[],
+  ): Promise<void> {
+    const trackCount = pl.tracks.length;
+    if (trackCount === 0) return;
+
+    const st = this.ensurePlaylistState(pl);
+
+    const indices = this.normalizeSelectionIndices(
+      selectionIndices,
+      trackCount,
+    );
+    if (!indices.length) return;
+
+    st.indices = indices;
+    st.position = 0;
+
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs =
+      pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
+
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch {
+        // ignore errors when stopping an already-stopped handle
+      }
+      st.handle = undefined;
+    }
+
+    await this.playPlaylistIndex(pl, st, 0);
+  }
+
+  async stopPlaylist(playlistPath: string): Promise<void> {
+    const st = this.playlistStates.get(playlistPath);
+    if (!st || !st.handle) {
+      if (st) {
+        st.active = false;
+      }
+      return;
+    }
+
+    const pref = this.getPlaylistPref(playlistPath);
+    const fadeOutMs =
+      pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
+
+    try {
+      await st.handle.stop({ fadeOutMs });
+    } catch {
+      // ignore errors when stopping an already-stopped handle
+    }
+
+    st.handle = undefined;
+    st.active = false;
+  }
+
+  async nextInPlaylist(pl: PlaylistInfo): Promise<void> {
+    const trackCount = pl.tracks.length;
+    if (!trackCount) return;
+
+    const st = this.ensurePlaylistState(pl);
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs =
+      pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
+
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch {
+        // ignore
+      }
+      st.handle = undefined;
+    }
+
+    const nextPos = (st.position + 1) % st.indices.length;
+    await this.playPlaylistIndex(pl, st, nextPos);
+  }
+
+  async prevInPlaylist(pl: PlaylistInfo): Promise<void> {
+    const trackCount = pl.tracks.length;
+    if (!trackCount) return;
+
+    const st = this.ensurePlaylistState(pl);
+    if (!st.indices.length) {
+           st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs =
+      pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
+
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch {
+        // ignore
+      }
+      st.handle = undefined;
+    }
+
+    const prevPos =
+      (st.position - 1 + st.indices.length) % st.indices.length;
+    await this.playPlaylistIndex(pl, st, prevPos);
+  }
+
+  private ensurePlaylistState(pl: PlaylistInfo): PlaylistRuntimeState {
+    let st = this.playlistStates.get(pl.path);
+    if (!st) {
+      st = {
+        path: pl.path,
+        indices: [],
+        position: 0,
+        active: false,
+      };
+      this.playlistStates.set(pl.path, st);
+    }
+
+    // Sanitize indices after library reloads
+    const trackCount = pl.tracks.length;
+    if (st.indices.length) {
+      const maxIndex = trackCount - 1;
+      st.indices = st.indices.filter(
+        (i) => i >= 0 && i <= maxIndex,
+      );
+      if (!st.indices.length) {
+        st.indices = this.buildFullTrackIndexList(trackCount);
+        st.position = 0;
+      } else if (st.position >= st.indices.length) {
+        st.position = 0;
+      }
+    }
+
+    return st;
+  }
+
+  private buildFullTrackIndexList(count: number): number[] {
+    if (count <= 0) return [];
+    const arr: number[] = [];
+    for (let i = 0; i < count; i++) arr.push(i);
+    return arr;
+  }
+
+  private normalizeSelectionIndices(
+    selection: number[] | undefined,
+    trackCount: number,
+  ): number[] {
+    if (trackCount <= 0) return [];
+
+    if (!selection || !selection.length) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+
+    const maxIndex = trackCount - 1;
+    const seen = new Set<number>();
+    const out: number[] = [];
+
+    for (const idx of selection) {
+      if (idx < 0 || idx > maxIndex) continue;
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      out.push(idx);
+    }
+
+    if (!out.length) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+    return out;
+  }
+
+  private async playPlaylistIndex(
+    pl: PlaylistInfo,
+    st: PlaylistRuntimeState,
+    position: number,
+  ): Promise<void> {
+    const trackCount = pl.tracks.length;
+    if (!trackCount) {
+      st.active = false;
+      st.handle = undefined;
+      return;
+    }
+
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+
+    if (position < 0 || position >= st.indices.length) {
+      position = 0;
+    }
+
+    const trackIdx = st.indices[position];
+    if (trackIdx < 0 || trackIdx >= trackCount) {
+      // Playlist changed in an unexpected way, rebuild indices from scratch
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+      if (!st.indices.length) {
+        st.active = false;
+        st.handle = undefined;
+        return;
+      }
+      await this.playPlaylistIndex(pl, st, 0);
+      return;
+    }
+
+    const file = pl.tracks[trackIdx];
+    const pref = this.getPlaylistPref(pl.path);
+    const vol = pref.volume ?? 1;
+    const fadeInMs =
+      pref.fadeInMs ?? this.settings.defaultFadeInMs;
+
+    st.position = position;
+    st.active = true;
+
+    try {
+      const handle = await this.engine.play(file, {
+        volume: vol,
+        loop: false,
+        fadeInMs,
+      });
+      st.handle = handle;
+      this.playIdToPlaylist.set(handle.id, pl.path);
+    } catch (err) {
+      console.error(
+        "TTRPG Soundboard: failed to play playlist track",
+        pl.path,
+        err,
+      );
+      st.active = false;
+      st.handle = undefined;
+    }
+  }
+
+  private async onPlaylistTrackEndedNaturally(
+    playlistPath: string,
+  ): Promise<void> {
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) return;
+
+    const st = this.playlistStates.get(playlistPath);
+    if (!st || !st.active) return;
+
+    const trackCount = pl.tracks.length;
+    if (!trackCount) {
+      st.active = false;
+      st.handle = undefined;
+      return;
+    }
+
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+
+    const pref = this.getPlaylistPref(playlistPath);
+    const lastPos = st.indices.length - 1;
+    const atLast = st.position >= lastPos;
+
+    if (atLast) {
+      if (pref.loop) {
+        await this.playPlaylistIndex(pl, st, 0);
+      } else {
+        st.handle = undefined;
+        st.active = false;
+      }
+    } else {
+      await this.playPlaylistIndex(pl, st, st.position + 1);
+    }
+  }
+
+  private findPlaylistByPath(
+    playlistPath: string,
+  ): PlaylistInfo | null {
+    if (!this.library) return null;
+    for (const f of this.library.topFolders) {
+      const c = this.library.byFolder[f];
+      if (!c) continue;
+      const pl = c.playlists.find((p) => p.path === playlistPath);
+      if (pl) return pl;
+    }
+    return null;
+  }
+
+  private parsePlaylistRangeSpec(
+    rangeSpec: string | undefined,
+    trackCount: number,
+  ): number[] {
+    if (trackCount <= 0) return [];
+    if (!rangeSpec || !rangeSpec.trim()) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+
+    const spec = rangeSpec.trim();
+
+    // Range form: "A-B"
+    const rangeMatch = spec.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start1 = parseInt(rangeMatch[1], 10);
+      const end1 = parseInt(rangeMatch[2], 10);
+      if (Number.isNaN(start1) || Number.isNaN(end1)) {
+        return [];
+      }
+      const start = Math.min(start1, end1);
+      const end = Math.max(start1, end1);
+
+      const indices: number[] = [];
+      for (let i = start; i <= end; i++) {
+        const zero = i - 1;
+        if (zero >= 0 && zero < trackCount) {
+          indices.push(zero);
+        }
+      }
+      return indices;
+    }
+
+    // Single index: "N"
+    const singleMatch = spec.match(/^(\d+)$/);
+    if (singleMatch) {
+      const n = parseInt(singleMatch[1], 10);
+      if (Number.isNaN(n)) return [];
+      const zero = n - 1;
+      if (zero < 0 || zero >= trackCount) return [];
+      return [zero];
+    }
+
+    return [];
+  }
+
+  private async handlePlaylistButtonClick(
+    playlistPath: string,
+    rangeSpec?: string,
+  ) {
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) {
+      new Notice(
+        `TTRPG Soundboard: playlist not found: ${playlistPath}`,
+      );
+      return;
+    }
+
+    const indices = this.parsePlaylistRangeSpec(
+      rangeSpec,
+      pl.tracks.length,
+    );
+    if (!indices.length) {
+      new Notice(
+        "Playlist range does not match any tracks.",
+      );
+      return;
+    }
+
+    await this.startPlaylist(pl, indices);
+  }
+
   // ===== Note buttons inside markdown =====
 
   /**
    * Transform markdown patterns like:
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg)
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg "thumbs/rain.png")
+   *   [BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight#1-4)
    * into clickable buttons that trigger playback.
    */
   private processNoteButtons(root: HTMLElement) {
-    const pattern =
-      /\[([^\]]+)\]\(ttrpg-sound:([^")]+)(?:\s+"([^"]+)")?\)/g;
+    // ----- Phase 1: normal links rendered as <a> -----
+    const anchors =
+      root.querySelectorAll<HTMLAnchorElement>(
+        'a[href^="ttrpg-sound:"], a[href^="ttrpg-playlist:"]',
+      );
 
-    const walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT,
-    );
-    const textNodes: Text[] = [];
-    let node: Node | null;
-    while ((node = walker.nextNode())) {
-      if (
-        node.nodeType === Node.TEXT_NODE &&
-        node.nodeValue &&
-        node.nodeValue.includes("ttrpg-sound:")
-      ) {
-        textNodes.push(node as Text);
-      }
-    }
+    for (const a of Array.from(anchors)) {
+      const hrefAttr =
+        a.getAttribute("data-href") ??
+        a.getAttribute("href") ??
+        "";
+      if (!hrefAttr) continue;
 
-    for (const textNode of textNodes) {
-      const parent = textNode.parentElement;
-      if (!parent) continue;
+      const label = a.textContent || "";
 
-      const original = textNode.nodeValue ?? "";
-      let lastIndex = 0;
-      const frag = document.createDocumentFragment();
+      if (hrefAttr.startsWith("ttrpg-sound:")) {
+        // Single sound button
+        const raw = hrefAttr.slice("ttrpg-sound:".length);
+        const path = raw.replace(/^\/+/, "");
 
-      pattern.lastIndex = 0;
-      let match: RegExpExecArray | null;
-
-      while ((match = pattern.exec(original)) !== null) {
-        const [full, label, rawPath, thumbPathRaw] = match;
-        const before = original.slice(lastIndex, match.index);
-        if (before) {
-          frag.appendChild(document.createTextNode(before));
-        }
-
-        const path = rawPath.replace(/^\/+/, "");
         const button = document.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
 
-        const thumbPath = thumbPathRaw?.trim();
+        // Optional thumbnail path is stored in the link title attribute:
+        // [Label](ttrpg-sound:Path "thumbs/img.png")
+        const thumbPath = a.getAttribute("title")?.trim();
         if (thumbPath) {
-          const af =
-            this.app.vault.getAbstractFileByPath(thumbPath);
+          const af = this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof TFile) {
             const img = document.createElement("img");
             img.src = this.app.vault.getResourcePath(af);
@@ -816,7 +1214,138 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         };
 
         this.noteButtons.add(button);
-        frag.appendChild(button);
+        a.replaceWith(button);
+      } else if (hrefAttr.startsWith("ttrpg-playlist:")) {
+        // Playlist button
+        const raw = hrefAttr.slice("ttrpg-playlist:".length);
+        const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
+        const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
+
+        const button = document.createElement("button");
+        button.classList.add("ttrpg-sb-stop");
+        button.dataset.playlistPath = playlistPath;
+        if (rangeSpec) {
+          button.dataset.playlistRange = rangeSpec.trim();
+        }
+        button.textContent = label || playlistPath;
+
+        button.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          void this.handlePlaylistButtonClick(
+            playlistPath,
+            rangeSpec,
+          );
+        };
+
+        this.noteButtons.add(button);
+        a.replaceWith(button);
+      }
+    }
+
+    // ----- Phase 2: fallback for raw Markdown that was not parsed as <a> -----
+    const pattern =
+      /\[([^\]]+)\]\((ttrpg-sound|ttrpg-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
+
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_TEXT,
+    );
+    const textNodes: Text[] = [];
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if (
+        node.nodeType === Node.TEXT_NODE &&
+        node.nodeValue &&
+        node.nodeValue.includes("ttrpg-")
+      ) {
+        const parent = node.parentElement;
+        // Do not touch code/pre blocks
+        if (
+          parent &&
+          (parent.tagName === "CODE" || parent.tagName === "PRE")
+        ) {
+          continue;
+        }
+        textNodes.push(node as Text);
+      }
+    }
+
+    for (const textNode of textNodes) {
+      const parent = textNode.parentElement;
+      if (!parent) continue;
+
+      const original = textNode.nodeValue ?? "";
+      let lastIndex = 0;
+      const frag = document.createDocumentFragment();
+
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = pattern.exec(original)) !== null) {
+        const [full, label, kind, rawPath, thumbPathRaw] = match;
+        const before = original.slice(lastIndex, match.index);
+        if (before) {
+          frag.appendChild(document.createTextNode(before));
+        }
+
+        if (kind === "ttrpg-sound") {
+          const path = rawPath.replace(/^\/+/, "");
+          const button = document.createElement("button");
+          button.classList.add("ttrpg-sb-stop");
+          button.dataset.path = path;
+
+          const thumbPath = thumbPathRaw?.trim();
+          if (thumbPath) {
+            const af =
+              this.app.vault.getAbstractFileByPath(thumbPath);
+            if (af instanceof TFile) {
+              const img = document.createElement("img");
+              img.src = this.app.vault.getResourcePath(af);
+              img.alt = label;
+              button.appendChild(img);
+              button.title = label;
+              button.classList.add("ttrpg-sb-note-thumb");
+            } else {
+              button.textContent = label;
+            }
+          } else {
+            button.textContent = label;
+          }
+
+          button.onclick = (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            void this.handleNoteButtonClick(path);
+          };
+
+          this.noteButtons.add(button);
+          frag.appendChild(button);
+        } else {
+          // ttrpg-playlist
+          const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
+          const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
+
+          const button = document.createElement("button");
+          button.classList.add("ttrpg-sb-stop");
+          button.dataset.playlistPath = playlistPath;
+          if (rangeSpec) {
+            button.dataset.playlistRange = rangeSpec.trim();
+          }
+          button.textContent = label;
+
+          button.onclick = (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            void this.handlePlaylistButtonClick(
+              playlistPath,
+              rangeSpec,
+            );
+          };
+
+          this.noteButtons.add(button);
+          frag.appendChild(button);
+        }
 
         lastIndex = match.index + full.length;
       }
@@ -837,9 +1366,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private async handleNoteButtonClick(path: string) {
     const af = this.app.vault.getAbstractFileByPath(path);
     if (!(af instanceof TFile)) {
-      new Notice(
-        `TTRPG Soundboard: file not found: ${path}`,
-      );
+      new Notice(`TTRPG Soundboard: file not found: ${path}`);
       return;
     }
 
@@ -874,15 +1401,96 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   private updateNoteButtonsPlayingState() {
     if (!this.engine) return;
-    const playing = new Set(this.engine.getPlayingFilePaths());
+    const playingPaths = new Set(this.engine.getPlayingFilePaths());
 
     for (const btn of Array.from(this.noteButtons)) {
       if (!btn.isConnected) {
         this.noteButtons.delete(btn);
         continue;
       }
-      const path = btn.dataset.path || "";
-      btn.classList.toggle("playing", playing.has(path));
+
+      const filePath = btn.dataset.path;
+      const playlistPath = btn.dataset.playlistPath;
+
+      let active = false;
+
+      if (filePath) {
+        active = playingPaths.has(filePath);
+      } else if (playlistPath) {
+        active = this.isPlaylistActive(playlistPath);
+      }
+
+      btn.classList.toggle("playing", active);
     }
+  }
+
+  // ===== Insert buttons into active note (from settings modals) =====
+
+  insertSoundButtonIntoActiveNote(filePath: string) {
+    const mdView =
+      this.lastMarkdownView ??
+      this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!mdView) {
+      new Notice(
+        "No active editor to insert button.",
+      );
+      return;
+    }
+
+    const editor = mdView.editor;
+    if (!editor) {
+      new Notice(
+        "No editor found for the current view.",
+      );
+      return;
+    }
+
+    const af = this.app.vault.getAbstractFileByPath(filePath);
+    const label =
+      af instanceof TFile
+        ? af.basename
+        : filePath.split("/").pop() ?? filePath;
+
+    const text = `[${label}](ttrpg-sound:${filePath})`;
+    editor.replaceSelection(text);
+  }
+
+  insertPlaylistButtonIntoActiveNote(playlistPath: string) {
+    const mdView =
+      this.lastMarkdownView ??
+      this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!mdView) {
+      new Notice(
+        "No active editor to insert button.",
+      );
+      return;
+    }
+
+    const editor = mdView.editor;
+    if (!editor) {
+      new Notice(
+        "No editor found for the current view.",
+      );
+      return;
+    }
+
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) {
+      new Notice(
+        `TTRPG Soundboard: playlist not found: ${playlistPath}`,
+      );
+      return;
+    }
+
+    const count = pl.tracks.length;
+    if (!count) {
+      new Notice("Playlist has no tracks.");
+      return;
+    }
+
+    const label = pl.name;
+    const spec = count === 1 ? "1" : `1-${count}`;
+    const text = `[${label}](ttrpg-playlist:${playlistPath}#${spec})`;
+    editor.replaceSelection(text);
   }
 }

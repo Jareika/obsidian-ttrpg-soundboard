@@ -42,11 +42,20 @@ var AudioEngine = class {
     this.listeners = /* @__PURE__ */ new Set();
     this.app = app;
   }
-  // ===== Public API =====
+  // ===== Event subscription =====
   on(cb) {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
   }
+  emit(e) {
+    this.listeners.forEach((fn) => {
+      try {
+        void fn(e);
+      } catch (e2) {
+      }
+    });
+  }
+  // ===== Master volume / cache config =====
   setMasterVolume(v) {
     this.masterVolume = Math.max(0, Math.min(1, v));
     if (this.masterGain && this.ctx) {
@@ -78,6 +87,7 @@ var AudioEngine = class {
     this.bufferUsage.clear();
     this.totalBufferedBytes = 0;
   }
+  // ===== Audio context / buffer loading =====
   async ensureContext() {
     var _a;
     if (!this.ctx) {
@@ -122,6 +132,7 @@ var AudioEngine = class {
     }
     return audioBuffer;
   }
+  // ===== Playback control =====
   async play(file, opts = {}) {
     var _a, _b;
     await this.ensureContext();
@@ -130,11 +141,12 @@ var AudioEngine = class {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.loop = !!opts.loop;
     const gain = ctx.createGain();
     gain.gain.value = 0;
-    source.connect(gain);
+    const loop = !!opts.loop;
+    source.loop = loop;
     gain.connect(this.masterGain);
+    source.connect(gain);
     const now = ctx.currentTime;
     const targetVol = Math.max(0, Math.min(1, (_a = opts.volume) != null ? _a : 1));
     const fadeIn = ((_b = opts.fadeInMs) != null ? _b : 0) / 1e3;
@@ -144,13 +156,23 @@ var AudioEngine = class {
     } else {
       gain.gain.setValueAtTime(targetVol, now);
     }
-    source.start();
-    const rec = { id, source, gain, file, stopped: false };
+    const rec = {
+      id,
+      source,
+      gain,
+      file,
+      buffer,
+      loop,
+      state: "playing",
+      startTime: now,
+      offset: 0,
+      lastVolume: targetVol
+    };
     this.playing.set(id, rec);
-    this.emit({ type: "start", filePath: file.path, id });
     source.onended = () => {
-      const r = this.playing.get(id);
-      if (!r || r.stopped) return;
+      const existing = this.playing.get(id);
+      if (!existing) return;
+      if (existing.state !== "playing") return;
       this.playing.delete(id);
       this.emit({
         type: "stop",
@@ -159,6 +181,8 @@ var AudioEngine = class {
         reason: "ended"
       });
     };
+    source.start();
+    this.emit({ type: "start", filePath: file.path, id });
     return {
       id,
       stop: (sOpts) => this.stopById(id, sOpts)
@@ -186,8 +210,94 @@ var AudioEngine = class {
     }
   }
   /**
-   * Set the volume (0..1) for all currently playing instances
-   * of a given file path (this does not touch the global master gain).
+   * Pause all currently playing instances of the given file.
+   * If fadeOutMs > 0, a short fade-out is applied before pausing.
+   */
+  async pauseByFile(file, fadeOutMs = 0) {
+    if (!this.ctx) return;
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path && p.state === "playing"
+    );
+    if (!targets.length) return;
+    const ctx = this.ctx;
+    const fadeSec = (fadeOutMs != null ? fadeOutMs : 0) / 1e3;
+    await Promise.all(
+      targets.map(
+        (rec) => new Promise((resolve) => {
+          if (!ctx || !rec.source) {
+            this.pauseRecord(rec);
+            this.emit({
+              type: "pause",
+              filePath: rec.file.path,
+              id: rec.id
+            });
+            resolve();
+            return;
+          }
+          if (fadeSec > 0) {
+            const n = ctx.currentTime;
+            const cur = rec.gain.gain.value;
+            rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
+            rec.gain.gain.cancelScheduledValues(n);
+            rec.gain.gain.setValueAtTime(cur, n);
+            rec.gain.gain.linearRampToValueAtTime(0, n + fadeSec);
+            window.setTimeout(() => {
+              this.pauseRecord(rec);
+              this.emit({
+                type: "pause",
+                filePath: rec.file.path,
+                id: rec.id
+              });
+              resolve();
+            }, Math.max(1, fadeOutMs));
+          } else {
+            this.pauseRecord(rec);
+            this.emit({
+              type: "pause",
+              filePath: rec.file.path,
+              id: rec.id
+            });
+            resolve();
+          }
+        })
+      )
+    );
+  }
+  /**
+   * Resume all paused instances of the given file.
+   * If fadeInMs > 0, a short fade-in is applied from volume 0.
+   */
+  async resumeByFile(file, fadeInMs = 0) {
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path && p.state === "paused"
+    );
+    if (!targets.length) return;
+    await this.ensureContext();
+    const ctx = this.ctx;
+    const fadeSec = (fadeInMs != null ? fadeInMs : 0) / 1e3;
+    for (const rec of targets) {
+      const now = ctx.currentTime;
+      const target = rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+      if (fadeSec > 0) {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(0, now);
+        rec.gain.gain.linearRampToValueAtTime(target, now + fadeSec);
+      } else {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(target, now);
+      }
+      rec.lastVolume = target;
+      this.resumeRecord(rec);
+      this.emit({
+        type: "resume",
+        filePath: rec.file.path,
+        id: rec.id
+      });
+    }
+  }
+  /**
+   * Set the volume (0..1) for all active instances of a given file path.
+   * This does not touch the global master gain.
    */
   setVolumeForPath(path, volume) {
     if (!this.ctx) return;
@@ -197,13 +307,38 @@ var AudioEngine = class {
       if (rec.file.path === path) {
         rec.gain.gain.cancelScheduledValues(now);
         rec.gain.gain.setValueAtTime(v, now);
+        rec.lastVolume = v;
       }
     }
   }
+  /**
+   * Returns a unique list of file paths that have at least one
+   * active playback record (playing or paused).
+   */
   getPlayingFilePaths() {
     const set = /* @__PURE__ */ new Set();
     for (const v of this.playing.values()) set.add(v.file.path);
     return [...set];
+  }
+  /**
+   * Summarised playback state for a given file path:
+   * - "none"    = no active sessions
+   * - "playing" = at least one playing, none paused
+   * - "paused"  = at least one paused, none playing
+   * - "mixed"   = both playing and paused sessions exist
+   */
+  getPathPlaybackState(path) {
+    let hasPlaying = false;
+    let hasPaused = false;
+    for (const rec of this.playing.values()) {
+      if (rec.file.path !== path) continue;
+      if (rec.state === "playing") hasPlaying = true;
+      else if (rec.state === "paused") hasPaused = true;
+    }
+    if (!hasPlaying && !hasPaused) return "none";
+    if (hasPlaying && !hasPaused) return "playing";
+    if (!hasPlaying && hasPaused) return "paused";
+    return "mixed";
   }
   /**
    * Called when the plugin unloads – closes the AudioContext and drops caches.
@@ -220,38 +355,41 @@ var AudioEngine = class {
     this.playing.clear();
   }
   // ===== Internal helpers =====
-  emit(e) {
-    this.listeners.forEach((fn) => {
-      try {
-        void fn(e);
-      } catch (e2) {
-      }
-    });
-  }
   stopById(id, sOpts) {
     var _a;
     const rec = this.playing.get(id);
-    if (!rec || rec.stopped) return Promise.resolve();
-    rec.stopped = true;
+    if (!rec) return Promise.resolve();
+    this.playing.delete(id);
     const ctx = this.ctx;
     const fadeOut = ((_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0) / 1e3;
-    const n = ctx.currentTime;
+    const filePath = rec.file.path;
+    const source = rec.source;
+    const gain = rec.gain;
+    if (!ctx || !source) {
+      this.emit({
+        type: "stop",
+        filePath,
+        id,
+        reason: "stopped"
+      });
+      return Promise.resolve();
+    }
     return new Promise((resolve) => {
       var _a2;
+      const n = ctx.currentTime;
       if (fadeOut > 0) {
-        rec.gain.gain.cancelScheduledValues(n);
-        const cur = rec.gain.gain.value;
-        rec.gain.gain.setValueAtTime(cur, n);
-        rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
+        gain.gain.cancelScheduledValues(n);
+        const cur = gain.gain.value;
+        gain.gain.setValueAtTime(cur, n);
+        gain.gain.linearRampToValueAtTime(0, n + fadeOut);
         window.setTimeout(() => {
           try {
-            rec.source.stop();
+            source.stop();
           } catch (e) {
           }
-          this.playing.delete(id);
           this.emit({
             type: "stop",
-            filePath: rec.file.path,
+            filePath,
             id,
             reason: "stopped"
           });
@@ -259,19 +397,63 @@ var AudioEngine = class {
         }, Math.max(1, (_a2 = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a2 : 0));
       } else {
         try {
-          rec.source.stop();
+          source.stop();
         } catch (e) {
         }
-        this.playing.delete(id);
         this.emit({
           type: "stop",
-          filePath: rec.file.path,
+          filePath,
           id,
           reason: "stopped"
         });
         resolve();
       }
     });
+  }
+  pauseRecord(rec) {
+    if (!this.ctx) return;
+    if (rec.state !== "playing" || !rec.source) return;
+    const ctx = this.ctx;
+    const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
+    const newOffset = rec.offset + elapsed;
+    rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
+    rec.state = "paused";
+    try {
+      rec.source.stop();
+    } catch (e) {
+    }
+    rec.source = null;
+  }
+  resumeRecord(rec) {
+    if (!this.ctx) return;
+    if (rec.state !== "paused") return;
+    const ctx = this.ctx;
+    const buffer = rec.buffer;
+    if (!buffer) return;
+    const maxOffset = Math.max(0, buffer.duration - 1e-3);
+    const offset = Math.max(0, Math.min(rec.offset, maxOffset));
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = rec.loop;
+    const gain = rec.gain;
+    source.connect(gain);
+    const id = rec.id;
+    source.onended = () => {
+      const existing = this.playing.get(id);
+      if (!existing) return;
+      if (existing.state !== "playing") return;
+      this.playing.delete(id);
+      this.emit({
+        type: "stop",
+        filePath: existing.file.path,
+        id,
+        reason: "ended"
+      });
+    };
+    rec.source = source;
+    rec.state = "playing";
+    rec.startTime = ctx.currentTime;
+    source.start(0, offset);
   }
   touchBufferKey(key) {
     var _a;
@@ -341,6 +523,13 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
     new import_obsidian.Setting(contentEl).setName("Loop by default").addToggle(
       (tg) => tg.setValue(loop).onChange((v) => {
         loop = v;
+      })
+    );
+    new import_obsidian.Setting(contentEl).setName("Insert note button").setDesc(
+      "Insert a Markdown button for this sound into the active note."
+    ).addButton(
+      (b) => b.setButtonText("Insert button").onClick(() => {
+        this.plugin.insertSoundButtonIntoActiveNote(this.filePath);
       })
     );
     new import_obsidian.Setting(contentEl).addButton(
@@ -413,12 +602,21 @@ var PlaylistSettingsModal = class extends import_obsidian2.Modal {
     new import_obsidian2.Setting(contentEl).setName("Volume").setDesc("0\u20131, multiplied by the master volume.").addSlider(
       (s) => s.setLimits(0, 1, 0.01).setValue(vol).onChange((v) => {
         vol = v;
-        this.plugin.updateVolumeForPlaylistFolder(this.folderPath, vol);
+        this.plugin.updateVolumeForPlaylistFolder(this.folderPath, v);
       })
     );
     new import_obsidian2.Setting(contentEl).setName("Loop playlist").addToggle(
       (tg) => tg.setValue(loop).onChange((v) => {
         loop = v;
+      })
+    );
+    new import_obsidian2.Setting(contentEl).setName("Insert playlist button").setDesc(
+      "Insert a Markdown button for this playlist into the active note."
+    ).addButton(
+      (b) => b.setButtonText("Insert button").onClick(() => {
+        this.plugin.insertPlaylistButtonIntoActiveNote(
+          this.folderPath
+        );
       })
     );
     new import_obsidian2.Setting(contentEl).addButton(
@@ -463,14 +661,10 @@ var PlaylistSettingsModal = class extends import_obsidian2.Modal {
 // ui/SoundboardView.ts
 var VIEW_TYPE_TTRPG_SOUNDBOARD = "ttrpg-soundboard-view";
 var SoundboardView = class extends import_obsidian3.ItemView {
-  // play id -> playlistPath
   constructor(leaf, plugin) {
     super(leaf);
     this.state = {};
     this.playingFiles = /* @__PURE__ */ new Set();
-    this.playlistStates = /* @__PURE__ */ new Map();
-    // playlistPath -> state
-    this.playIdToPlaylist = /* @__PURE__ */ new Map();
     this.plugin = plugin;
   }
   getViewType() {
@@ -490,11 +684,6 @@ var SoundboardView = class extends import_obsidian3.ItemView {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
-        const playlistPath = this.playIdToPlaylist.get(e.id);
-        if (playlistPath && e.reason === "ended") {
-          void this.onTrackEndedNaturally(playlistPath);
-        }
-        if (e.id) this.playIdToPlaylist.delete(e.id);
       }
       this.updatePlayingVisuals();
     });
@@ -967,7 +1156,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       )})`;
     }
     tile.onclick = () => {
-      void this.startPlaylist(pl, 0);
+      void this.plugin.startPlaylist(pl);
     };
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
     const prevBtn = controls.createEl("button", {
@@ -976,7 +1165,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     (0, import_obsidian3.setIcon)(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
-      void this.prevInPlaylist(pl);
+      void this.plugin.prevInPlaylist(pl);
     };
     const stopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-stop",
@@ -984,7 +1173,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
-      void this.stopPlaylist(pl);
+      void this.plugin.stopPlaylist(pl.path);
     };
     const nextBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn"
@@ -992,7 +1181,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     (0, import_obsidian3.setIcon)(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
-      void this.nextInPlaylist(pl);
+      void this.plugin.nextInPlaylist(pl);
     };
     const gearBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn push-right"
@@ -1004,8 +1193,8 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       this.plugin,
       pl.path
     ).open();
-    const st = this.ensurePlaylistState(pl.path);
-    if (st.active) stopBtn.classList.add("playing");
+    const isActive = this.plugin.isPlaylistActive(pl.path);
+    if (isActive) stopBtn.classList.add("playing");
   }
   renderPlaylistRow(container, pl) {
     const row = container.createDiv({
@@ -1022,7 +1211,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       text: `${pl.tracks.length} tracks`
     });
     main.onclick = () => {
-      void this.startPlaylist(pl, 0);
+      void this.plugin.startPlaylist(pl);
     };
     const controls = row.createDiv({
       cls: "ttrpg-sb-simple-controls"
@@ -1033,7 +1222,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     (0, import_obsidian3.setIcon)(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
-      void this.prevInPlaylist(pl);
+      void this.plugin.prevInPlaylist(pl);
     };
     const stopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-stop",
@@ -1041,7 +1230,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
-      void this.stopPlaylist(pl);
+      void this.plugin.stopPlaylist(pl.path);
     };
     const nextBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn"
@@ -1049,7 +1238,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     (0, import_obsidian3.setIcon)(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
-      void this.nextInPlaylist(pl);
+      void this.plugin.nextInPlaylist(pl);
     };
     const gearBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn push-right"
@@ -1061,129 +1250,11 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       this.plugin,
       pl.path
     ).open();
-    const st = this.ensurePlaylistState(pl.path);
-    if (st.active) {
+    const isActive = this.plugin.isPlaylistActive(pl.path);
+    if (isActive) {
       row.addClass("playing");
       stopBtn.classList.add("playing");
     }
-  }
-  ensurePlaylistState(pPath) {
-    let st = this.playlistStates.get(pPath);
-    if (!st) {
-      st = { index: 0, active: false };
-      this.playlistStates.set(pPath, st);
-    }
-    return st;
-  }
-  async startPlaylist(pl, startIndex = 0) {
-    var _a;
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs;
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch (e) {
-      }
-      st.handle = void 0;
-    }
-    await this.playPlaylistIndex(
-      pl,
-      Math.max(0, Math.min(startIndex, pl.tracks.length - 1))
-    );
-  }
-  async playPlaylistIndex(pl, index) {
-    var _a, _b;
-    const st = this.ensurePlaylistState(pl.path);
-    if (pl.tracks.length === 0) return;
-    const file = pl.tracks[index];
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const vol = (_a = pref.volume) != null ? _a : 1;
-    const fadeInMs = (_b = pref.fadeInMs) != null ? _b : this.plugin.settings.defaultFadeInMs;
-    const handle = await this.plugin.engine.play(file, {
-      volume: vol,
-      loop: false,
-      fadeInMs
-    });
-    st.index = index;
-    st.handle = handle;
-    st.active = true;
-    this.playIdToPlaylist.set(handle.id, pl.path);
-    this.updatePlayingVisuals();
-  }
-  async stopPlaylist(pl) {
-    var _a;
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs;
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch (e) {
-      }
-      st.handle = void 0;
-    }
-    st.active = false;
-    this.updatePlayingVisuals();
-  }
-  async nextInPlaylist(pl) {
-    var _a;
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs;
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch (e) {
-      }
-      st.handle = void 0;
-    }
-    const nextIndex = (st.index + 1) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, nextIndex);
-  }
-  async prevInPlaylist(pl) {
-    var _a;
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs;
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch (e) {
-      }
-      st.handle = void 0;
-    }
-    const prevIndex = (st.index - 1 + pl.tracks.length) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, prevIndex);
-  }
-  async onTrackEndedNaturally(pPath) {
-    const st = this.ensurePlaylistState(pPath);
-    if (!st.active) return;
-    const pl = this.findPlaylistByPath(pPath);
-    if (!pl) return;
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const atLast = st.index >= pl.tracks.length - 1;
-    if (atLast) {
-      if (pref.loop) {
-        await this.playPlaylistIndex(pl, 0);
-      } else {
-        st.handle = void 0;
-        st.active = false;
-        this.updatePlayingVisuals();
-      }
-    } else {
-      await this.playPlaylistIndex(pl, st.index + 1);
-    }
-  }
-  findPlaylistByPath(pPath) {
-    if (!this.library) return null;
-    for (const f of this.library.topFolders) {
-      const c = this.library.byFolder[f];
-      if (!c) continue;
-      const pl = c.playlists.find((p) => p.path === pPath);
-      if (pl) return pl;
-    }
-    return null;
   }
   updatePlayingVisuals() {
     const btns = this.contentEl.querySelectorAll(
@@ -1206,16 +1277,16 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     );
     pbtns.forEach((b) => {
       const p = b.dataset.playlist || "";
-      const st = this.playlistStates.get(p);
-      b.toggleClass("playing", !!(st == null ? void 0 : st.active));
+      const active = this.plugin.isPlaylistActive(p);
+      b.toggleClass("playing", active);
     });
     const plRows = this.contentEl.querySelectorAll(
       ".ttrpg-sb-simple-row[data-playlist]"
     );
     plRows.forEach((r) => {
       const p = r.dataset.playlist || "";
-      const st = this.playlistStates.get(p);
-      r.toggleClass("playing", !!(st == null ? void 0 : st.active));
+      const active = this.plugin.isPlaylistActive(p);
+      r.toggleClass("playing", active);
     });
   }
 };
@@ -1240,9 +1311,13 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
   }
   onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
-    this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
+    this.playingPaths = new Set(
+      this.plugin.engine.getPlayingFilePaths()
+    );
     this.unsubEngine = this.plugin.engine.on(() => {
-      this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
+      this.playingPaths = new Set(
+        this.plugin.engine.getPlayingFilePaths()
+      );
       this.render();
     });
     this.render();
@@ -1276,7 +1351,10 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     const af = this.app.vault.getAbstractFileByPath(path);
     const file = af instanceof import_obsidian4.TFile ? af : null;
     const name = (_b = (_a = file == null ? void 0 : file.basename) != null ? _a : path.split("/").pop()) != null ? _b : path;
+    const state = this.plugin.engine.getPathPlaybackState(path);
+    const isPaused = state === "paused";
     const card = grid.createDiv({ cls: "ttrpg-sb-now-card" });
+    if (isPaused) card.addClass("paused");
     card.createDiv({ cls: "ttrpg-sb-now-title", text: name });
     const controls = card.createDiv({ cls: "ttrpg-sb-now-controls" });
     const stopBtn = controls.createEl("button", {
@@ -1286,6 +1364,24 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     stopBtn.onclick = async () => {
       if (file) {
         await this.plugin.engine.stopByFile(
+          file,
+          this.plugin.settings.defaultFadeOutMs
+        );
+      }
+    };
+    const pauseBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-stop",
+      text: isPaused ? "Resume" : "Pause"
+    });
+    pauseBtn.onclick = async () => {
+      if (!file) return;
+      if (isPaused) {
+        await this.plugin.engine.resumeByFile(
+          file,
+          this.plugin.settings.defaultFadeInMs
+        );
+      } else {
+        await this.plugin.engine.pauseByFile(
           file,
           this.plugin.settings.defaultFadeOutMs
         );
@@ -1628,29 +1724,20 @@ function normalizeFolder(p) {
 // ui/QuickPlayModal.ts
 var import_obsidian7 = require("obsidian");
 var QuickPlayModal = class extends import_obsidian7.FuzzySuggestModal {
-  constructor(app, plugin) {
+  constructor(app, plugin, items) {
     super(app);
     this.plugin = plugin;
-    this.setPlaceholder("Type to search sounds...");
+    this.items = items;
+    this.setPlaceholder("Search sound to play\u2026");
   }
   getItems() {
-    return this.plugin.buildQuickPlayItems();
+    return this.items;
   }
   getItemText(item) {
-    if (item.context) {
+    if (item.context && item.context !== "(root)") {
       return `${item.label} \u2014 ${item.context}`;
     }
     return item.label;
-  }
-  renderSuggestion(item, el) {
-    el.empty();
-    const nameEl = el.createDiv();
-    nameEl.textContent = item.label;
-    if (item.context) {
-      const ctxEl = el.createDiv();
-      ctxEl.addClass("mod-muted");
-      ctxEl.textContent = item.context;
-    }
   }
   onChooseItem(item) {
     void this.plugin.playFromQuickPicker(item.file);
@@ -1668,6 +1755,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     this.playlistPrefs = {};
     this.durations = {};
     this.library = { topFolders: [], byFolder: {}, allSingles: [] };
+    // Playlist runtime state
+    this.playlistStates = /* @__PURE__ */ new Map();
+    this.playIdToPlaylist = /* @__PURE__ */ new Map();
     // Note buttons inside markdown documents
     this.noteButtons = /* @__PURE__ */ new Set();
     // Registry of volume sliders per file path (soundboard view + now playing)
@@ -1677,6 +1767,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     this.pendingDuration = /* @__PURE__ */ new Map();
     this.currentDurationLoads = 0;
     this.maxConcurrentDurationLoads = 3;
+    // Remember the last active MarkdownView so we can insert buttons
+    // even if the user clicks in the soundboard sidebar.
+    this.lastMarkdownView = null;
   }
   async onload() {
     await this.loadAll();
@@ -1684,7 +1777,30 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
     this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
-    this.engineNoteUnsub = this.engine.on(() => {
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        const view = leaf == null ? void 0 : leaf.view;
+        if (view instanceof import_obsidian8.MarkdownView) {
+          this.lastMarkdownView = view;
+        }
+      })
+    );
+    const current = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+    if (current) this.lastMarkdownView = current;
+    this.engineNoteUnsub = this.engine.on((e) => {
+      if (e.type === "stop") {
+        const playlistPath = this.playIdToPlaylist.get(e.id);
+        if (playlistPath) {
+          this.playIdToPlaylist.delete(e.id);
+          const st = this.playlistStates.get(playlistPath);
+          if (e.reason === "ended") {
+            void this.onPlaylistTrackEndedNaturally(playlistPath);
+          } else if (st) {
+            st.handle = void 0;
+            st.active = false;
+          }
+        }
+      }
       this.updateNoteButtonsPlayingState();
     });
     this.registerView(
@@ -1728,9 +1844,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
       name: "Clear decoded audio cache (free RAM)",
       callback: () => {
         this.engine.clearBufferCache();
-        new import_obsidian8.Notice(
-          "Cleared decoded audio cache."
-        );
+        new import_obsidian8.Notice("Cleared decoded audio cache.");
       }
     });
     this.addCommand({
@@ -1744,9 +1858,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
       callback: () => {
         const items = this.buildQuickPlayItems();
         if (!items.length) {
-          new import_obsidian8.Notice(
-            "No audio files found in library."
-          );
+          new import_obsidian8.Notice("No audio files found in library.");
           return;
         }
         new QuickPlayModal(this.app, this, items).open();
@@ -1800,6 +1912,8 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     (_b = this.engineNoteUnsub) == null ? void 0 : _b.call(this);
     this.noteButtons.clear();
     this.volumeSliders.clear();
+    this.playlistStates.clear();
+    this.playIdToPlaylist.clear();
     (_c = this.engine) == null ? void 0 : _c.shutdown();
   }
   // ===== CSS helper =====
@@ -2208,46 +2322,313 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
       fadeInMs
     });
   }
+  // ===== Playlist runtime control (for UI + playlist note buttons) =====
+  isPlaylistActive(playlistPath) {
+    const st = this.playlistStates.get(playlistPath);
+    return !!(st == null ? void 0 : st.active);
+  }
+  async startPlaylist(pl, selectionIndices) {
+    var _a;
+    const trackCount = pl.tracks.length;
+    if (trackCount === 0) return;
+    const st = this.ensurePlaylistState(pl);
+    const indices = this.normalizeSelectionIndices(
+      selectionIndices,
+      trackCount
+    );
+    if (!indices.length) return;
+    st.indices = indices;
+    st.position = 0;
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch (e) {
+      }
+      st.handle = void 0;
+    }
+    await this.playPlaylistIndex(pl, st, 0);
+  }
+  async stopPlaylist(playlistPath) {
+    var _a;
+    const st = this.playlistStates.get(playlistPath);
+    if (!st || !st.handle) {
+      if (st) {
+        st.active = false;
+      }
+      return;
+    }
+    const pref = this.getPlaylistPref(playlistPath);
+    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    try {
+      await st.handle.stop({ fadeOutMs });
+    } catch (e) {
+    }
+    st.handle = void 0;
+    st.active = false;
+  }
+  async nextInPlaylist(pl) {
+    var _a;
+    const trackCount = pl.tracks.length;
+    if (!trackCount) return;
+    const st = this.ensurePlaylistState(pl);
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch (e) {
+      }
+      st.handle = void 0;
+    }
+    const nextPos = (st.position + 1) % st.indices.length;
+    await this.playPlaylistIndex(pl, st, nextPos);
+  }
+  async prevInPlaylist(pl) {
+    var _a;
+    const trackCount = pl.tracks.length;
+    if (!trackCount) return;
+    const st = this.ensurePlaylistState(pl);
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+    const pref = this.getPlaylistPref(pl.path);
+    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    if (st.handle) {
+      try {
+        await st.handle.stop({ fadeOutMs });
+      } catch (e) {
+      }
+      st.handle = void 0;
+    }
+    const prevPos = (st.position - 1 + st.indices.length) % st.indices.length;
+    await this.playPlaylistIndex(pl, st, prevPos);
+  }
+  ensurePlaylistState(pl) {
+    let st = this.playlistStates.get(pl.path);
+    if (!st) {
+      st = {
+        path: pl.path,
+        indices: [],
+        position: 0,
+        active: false
+      };
+      this.playlistStates.set(pl.path, st);
+    }
+    const trackCount = pl.tracks.length;
+    if (st.indices.length) {
+      const maxIndex = trackCount - 1;
+      st.indices = st.indices.filter(
+        (i) => i >= 0 && i <= maxIndex
+      );
+      if (!st.indices.length) {
+        st.indices = this.buildFullTrackIndexList(trackCount);
+        st.position = 0;
+      } else if (st.position >= st.indices.length) {
+        st.position = 0;
+      }
+    }
+    return st;
+  }
+  buildFullTrackIndexList(count) {
+    if (count <= 0) return [];
+    const arr = [];
+    for (let i = 0; i < count; i++) arr.push(i);
+    return arr;
+  }
+  normalizeSelectionIndices(selection, trackCount) {
+    if (trackCount <= 0) return [];
+    if (!selection || !selection.length) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+    const maxIndex = trackCount - 1;
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const idx of selection) {
+      if (idx < 0 || idx > maxIndex) continue;
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      out.push(idx);
+    }
+    if (!out.length) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+    return out;
+  }
+  async playPlaylistIndex(pl, st, position) {
+    var _a, _b;
+    const trackCount = pl.tracks.length;
+    if (!trackCount) {
+      st.active = false;
+      st.handle = void 0;
+      return;
+    }
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+    if (position < 0 || position >= st.indices.length) {
+      position = 0;
+    }
+    const trackIdx = st.indices[position];
+    if (trackIdx < 0 || trackIdx >= trackCount) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+      if (!st.indices.length) {
+        st.active = false;
+        st.handle = void 0;
+        return;
+      }
+      await this.playPlaylistIndex(pl, st, 0);
+      return;
+    }
+    const file = pl.tracks[trackIdx];
+    const pref = this.getPlaylistPref(pl.path);
+    const vol = (_a = pref.volume) != null ? _a : 1;
+    const fadeInMs = (_b = pref.fadeInMs) != null ? _b : this.settings.defaultFadeInMs;
+    st.position = position;
+    st.active = true;
+    try {
+      const handle = await this.engine.play(file, {
+        volume: vol,
+        loop: false,
+        fadeInMs
+      });
+      st.handle = handle;
+      this.playIdToPlaylist.set(handle.id, pl.path);
+    } catch (err) {
+      console.error(
+        "TTRPG Soundboard: failed to play playlist track",
+        pl.path,
+        err
+      );
+      st.active = false;
+      st.handle = void 0;
+    }
+  }
+  async onPlaylistTrackEndedNaturally(playlistPath) {
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) return;
+    const st = this.playlistStates.get(playlistPath);
+    if (!st || !st.active) return;
+    const trackCount = pl.tracks.length;
+    if (!trackCount) {
+      st.active = false;
+      st.handle = void 0;
+      return;
+    }
+    if (!st.indices.length) {
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = 0;
+    }
+    const pref = this.getPlaylistPref(playlistPath);
+    const lastPos = st.indices.length - 1;
+    const atLast = st.position >= lastPos;
+    if (atLast) {
+      if (pref.loop) {
+        await this.playPlaylistIndex(pl, st, 0);
+      } else {
+        st.handle = void 0;
+        st.active = false;
+      }
+    } else {
+      await this.playPlaylistIndex(pl, st, st.position + 1);
+    }
+  }
+  findPlaylistByPath(playlistPath) {
+    if (!this.library) return null;
+    for (const f of this.library.topFolders) {
+      const c = this.library.byFolder[f];
+      if (!c) continue;
+      const pl = c.playlists.find((p) => p.path === playlistPath);
+      if (pl) return pl;
+    }
+    return null;
+  }
+  parsePlaylistRangeSpec(rangeSpec, trackCount) {
+    if (trackCount <= 0) return [];
+    if (!rangeSpec || !rangeSpec.trim()) {
+      return this.buildFullTrackIndexList(trackCount);
+    }
+    const spec = rangeSpec.trim();
+    const rangeMatch = spec.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start1 = parseInt(rangeMatch[1], 10);
+      const end1 = parseInt(rangeMatch[2], 10);
+      if (Number.isNaN(start1) || Number.isNaN(end1)) {
+        return [];
+      }
+      const start = Math.min(start1, end1);
+      const end = Math.max(start1, end1);
+      const indices = [];
+      for (let i = start; i <= end; i++) {
+        const zero = i - 1;
+        if (zero >= 0 && zero < trackCount) {
+          indices.push(zero);
+        }
+      }
+      return indices;
+    }
+    const singleMatch = spec.match(/^(\d+)$/);
+    if (singleMatch) {
+      const n = parseInt(singleMatch[1], 10);
+      if (Number.isNaN(n)) return [];
+      const zero = n - 1;
+      if (zero < 0 || zero >= trackCount) return [];
+      return [zero];
+    }
+    return [];
+  }
+  async handlePlaylistButtonClick(playlistPath, rangeSpec) {
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) {
+      new import_obsidian8.Notice(
+        `TTRPG Soundboard: playlist not found: ${playlistPath}`
+      );
+      return;
+    }
+    const indices = this.parsePlaylistRangeSpec(
+      rangeSpec,
+      pl.tracks.length
+    );
+    if (!indices.length) {
+      new import_obsidian8.Notice(
+        "Playlist range does not match any tracks."
+      );
+      return;
+    }
+    await this.startPlaylist(pl, indices);
+  }
   // ===== Note buttons inside markdown =====
   /**
    * Transform markdown patterns like:
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg)
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg "thumbs/rain.png")
+   *   [BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight#1-4)
    * into clickable buttons that trigger playback.
    */
   processNoteButtons(root) {
-    var _a;
-    const pattern = /\[([^\]]+)\]\(ttrpg-sound:([^")]+)(?:\s+"([^"]+)")?\)/g;
-    const walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT
+    var _a, _b, _c, _d;
+    const anchors = root.querySelectorAll(
+      'a[href^="ttrpg-sound:"], a[href^="ttrpg-playlist:"]'
     );
-    const textNodes = [];
-    let node;
-    while (node = walker.nextNode()) {
-      if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.includes("ttrpg-sound:")) {
-        textNodes.push(node);
-      }
-    }
-    for (const textNode of textNodes) {
-      const parent = textNode.parentElement;
-      if (!parent) continue;
-      const original = (_a = textNode.nodeValue) != null ? _a : "";
-      let lastIndex = 0;
-      const frag = document.createDocumentFragment();
-      pattern.lastIndex = 0;
-      let match;
-      while ((match = pattern.exec(original)) !== null) {
-        const [full, label, rawPath, thumbPathRaw] = match;
-        const before = original.slice(lastIndex, match.index);
-        if (before) {
-          frag.appendChild(document.createTextNode(before));
-        }
-        const path = rawPath.replace(/^\/+/, "");
+    for (const a of Array.from(anchors)) {
+      const hrefAttr = (_b = (_a = a.getAttribute("data-href")) != null ? _a : a.getAttribute("href")) != null ? _b : "";
+      if (!hrefAttr) continue;
+      const label = a.textContent || "";
+      if (hrefAttr.startsWith("ttrpg-sound:")) {
+        const raw = hrefAttr.slice("ttrpg-sound:".length);
+        const path = raw.replace(/^\/+/, "");
         const button = document.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
-        const thumbPath = thumbPathRaw == null ? void 0 : thumbPathRaw.trim();
+        const thumbPath = (_c = a.getAttribute("title")) == null ? void 0 : _c.trim();
         if (thumbPath) {
           const af = this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof import_obsidian8.TFile) {
@@ -2269,7 +2650,109 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
           void this.handleNoteButtonClick(path);
         };
         this.noteButtons.add(button);
-        frag.appendChild(button);
+        a.replaceWith(button);
+      } else if (hrefAttr.startsWith("ttrpg-playlist:")) {
+        const raw = hrefAttr.slice("ttrpg-playlist:".length);
+        const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
+        const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
+        const button = document.createElement("button");
+        button.classList.add("ttrpg-sb-stop");
+        button.dataset.playlistPath = playlistPath;
+        if (rangeSpec) {
+          button.dataset.playlistRange = rangeSpec.trim();
+        }
+        button.textContent = label || playlistPath;
+        button.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          void this.handlePlaylistButtonClick(
+            playlistPath,
+            rangeSpec
+          );
+        };
+        this.noteButtons.add(button);
+        a.replaceWith(button);
+      }
+    }
+    const pattern = /\[([^\]]+)\]\((ttrpg-sound|ttrpg-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_TEXT
+    );
+    const textNodes = [];
+    let node;
+    while (node = walker.nextNode()) {
+      if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.includes("ttrpg-")) {
+        const parent = node.parentElement;
+        if (parent && (parent.tagName === "CODE" || parent.tagName === "PRE")) {
+          continue;
+        }
+        textNodes.push(node);
+      }
+    }
+    for (const textNode of textNodes) {
+      const parent = textNode.parentElement;
+      if (!parent) continue;
+      const original = (_d = textNode.nodeValue) != null ? _d : "";
+      let lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(original)) !== null) {
+        const [full, label, kind, rawPath, thumbPathRaw] = match;
+        const before = original.slice(lastIndex, match.index);
+        if (before) {
+          frag.appendChild(document.createTextNode(before));
+        }
+        if (kind === "ttrpg-sound") {
+          const path = rawPath.replace(/^\/+/, "");
+          const button = document.createElement("button");
+          button.classList.add("ttrpg-sb-stop");
+          button.dataset.path = path;
+          const thumbPath = thumbPathRaw == null ? void 0 : thumbPathRaw.trim();
+          if (thumbPath) {
+            const af = this.app.vault.getAbstractFileByPath(thumbPath);
+            if (af instanceof import_obsidian8.TFile) {
+              const img = document.createElement("img");
+              img.src = this.app.vault.getResourcePath(af);
+              img.alt = label;
+              button.appendChild(img);
+              button.title = label;
+              button.classList.add("ttrpg-sb-note-thumb");
+            } else {
+              button.textContent = label;
+            }
+          } else {
+            button.textContent = label;
+          }
+          button.onclick = (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            void this.handleNoteButtonClick(path);
+          };
+          this.noteButtons.add(button);
+          frag.appendChild(button);
+        } else {
+          const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
+          const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
+          const button = document.createElement("button");
+          button.classList.add("ttrpg-sb-stop");
+          button.dataset.playlistPath = playlistPath;
+          if (rangeSpec) {
+            button.dataset.playlistRange = rangeSpec.trim();
+          }
+          button.textContent = label;
+          button.onclick = (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            void this.handlePlaylistButtonClick(
+              playlistPath,
+              rangeSpec
+            );
+          };
+          this.noteButtons.add(button);
+          frag.appendChild(button);
+        }
         lastIndex = match.index + full.length;
       }
       const after = original.slice(lastIndex);
@@ -2286,9 +2769,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     var _a, _b, _c;
     const af = this.app.vault.getAbstractFileByPath(path);
     if (!(af instanceof import_obsidian8.TFile)) {
-      new import_obsidian8.Notice(
-        `TTRPG Soundboard: file not found: ${path}`
-      );
+      new import_obsidian8.Notice(`TTRPG Soundboard: file not found: ${path}`);
       return;
     }
     const file = af;
@@ -2316,14 +2797,76 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
   }
   updateNoteButtonsPlayingState() {
     if (!this.engine) return;
-    const playing = new Set(this.engine.getPlayingFilePaths());
+    const playingPaths = new Set(this.engine.getPlayingFilePaths());
     for (const btn of Array.from(this.noteButtons)) {
       if (!btn.isConnected) {
         this.noteButtons.delete(btn);
         continue;
       }
-      const path = btn.dataset.path || "";
-      btn.classList.toggle("playing", playing.has(path));
+      const filePath = btn.dataset.path;
+      const playlistPath = btn.dataset.playlistPath;
+      let active = false;
+      if (filePath) {
+        active = playingPaths.has(filePath);
+      } else if (playlistPath) {
+        active = this.isPlaylistActive(playlistPath);
+      }
+      btn.classList.toggle("playing", active);
     }
+  }
+  // ===== Insert buttons into active note (from settings modals) =====
+  insertSoundButtonIntoActiveNote(filePath) {
+    var _a, _b;
+    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+    if (!mdView) {
+      new import_obsidian8.Notice(
+        "No active editor to insert button."
+      );
+      return;
+    }
+    const editor = mdView.editor;
+    if (!editor) {
+      new import_obsidian8.Notice(
+        "No editor found for the current view."
+      );
+      return;
+    }
+    const af = this.app.vault.getAbstractFileByPath(filePath);
+    const label = af instanceof import_obsidian8.TFile ? af.basename : (_b = filePath.split("/").pop()) != null ? _b : filePath;
+    const text = `[${label}](ttrpg-sound:${filePath})`;
+    editor.replaceSelection(text);
+  }
+  insertPlaylistButtonIntoActiveNote(playlistPath) {
+    var _a;
+    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+    if (!mdView) {
+      new import_obsidian8.Notice(
+        "No active editor to insert button."
+      );
+      return;
+    }
+    const editor = mdView.editor;
+    if (!editor) {
+      new import_obsidian8.Notice(
+        "No editor found for the current view."
+      );
+      return;
+    }
+    const pl = this.findPlaylistByPath(playlistPath);
+    if (!pl) {
+      new import_obsidian8.Notice(
+        `TTRPG Soundboard: playlist not found: ${playlistPath}`
+      );
+      return;
+    }
+    const count = pl.tracks.length;
+    if (!count) {
+      new import_obsidian8.Notice("Playlist has no tracks.");
+      return;
+    }
+    const label = pl.name;
+    const spec = count === 1 ? "1" : `1-${count}`;
+    const text = `[${label}](ttrpg-playlist:${playlistPath}#${spec})`;
+    editor.replaceSelection(text);
   }
 };

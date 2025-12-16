@@ -252,6 +252,10 @@
   background: var(--background-primary);
 }
 
+.ttrpg-sb-now-card.paused {
+  opacity: 0.7;
+}
+
 .ttrpg-sb-now-title {
   font-weight: 600;
   font-size: 0.95em;

@@ -18,24 +18,12 @@ interface ViewState {
   folder?: string;
 }
 
-interface PlaylistPlayState {
-  index: number;
-  handle?: {
-    id: string;
-    stop: (opts?: { fadeOutMs?: number }) => Promise<void> | void;
-  };
-  active: boolean;
-}
-
 export default class SoundboardView extends ItemView {
   plugin: TTRPGSoundboardPlugin;
   state: ViewState = {};
   library?: LibraryModel;
   playingFiles = new Set<string>();
   private unsubEngine?: () => void;
-
-  private playlistStates = new Map<string, PlaylistPlayState>(); // playlistPath -> state
-  private playIdToPlaylist = new Map<string, string>(); // play id -> playlistPath
 
   constructor(leaf: WorkspaceLeaf, plugin: TTRPGSoundboardPlugin) {
     super(leaf);
@@ -66,14 +54,8 @@ export default class SoundboardView extends ItemView {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
-
-        // Playlist auto-advance only when the track ends naturally
-        const playlistPath = this.playIdToPlaylist.get(e.id);
-        if (playlistPath && e.reason === "ended") {
-          void this.onTrackEndedNaturally(playlistPath);
-        }
-        if (e.id) this.playIdToPlaylist.delete(e.id);
       }
+      // Pause/resume keep the file in the set, but still require visual refresh
       this.updatePlayingVisuals();
     });
 
@@ -644,7 +626,7 @@ export default class SoundboardView extends ItemView {
     }
 
     tile.onclick = () => {
-      void this.startPlaylist(pl, 0);
+      void this.plugin.startPlaylist(pl);
     };
 
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
@@ -655,7 +637,7 @@ export default class SoundboardView extends ItemView {
     setIcon(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
-      void this.prevInPlaylist(pl);
+      void this.plugin.prevInPlaylist(pl);
     };
 
     const stopBtn = controls.createEl("button", {
@@ -664,7 +646,7 @@ export default class SoundboardView extends ItemView {
     });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
-      void this.stopPlaylist(pl);
+      void this.plugin.stopPlaylist(pl.path);
     };
 
     const nextBtn = controls.createEl("button", {
@@ -673,7 +655,7 @@ export default class SoundboardView extends ItemView {
     setIcon(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
-      void this.nextInPlaylist(pl);
+      void this.plugin.nextInPlaylist(pl);
     };
 
     const gearBtn = controls.createEl("button", {
@@ -688,8 +670,8 @@ export default class SoundboardView extends ItemView {
         pl.path,
       ).open();
 
-    const st = this.ensurePlaylistState(pl.path);
-    if (st.active) stopBtn.classList.add("playing");
+    const isActive = this.plugin.isPlaylistActive(pl.path);
+    if (isActive) stopBtn.classList.add("playing");
   }
 
   private renderPlaylistRow(container: HTMLElement, pl: PlaylistInfo) {
@@ -709,7 +691,7 @@ export default class SoundboardView extends ItemView {
     });
 
     main.onclick = () => {
-      void this.startPlaylist(pl, 0);
+      void this.plugin.startPlaylist(pl);
     };
 
     const controls = row.createDiv({
@@ -722,7 +704,7 @@ export default class SoundboardView extends ItemView {
     setIcon(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
-      void this.prevInPlaylist(pl);
+      void this.plugin.prevInPlaylist(pl);
     };
 
     const stopBtn = controls.createEl("button", {
@@ -731,7 +713,7 @@ export default class SoundboardView extends ItemView {
     });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
-      void this.stopPlaylist(pl);
+      void this.plugin.stopPlaylist(pl.path);
     };
 
     const nextBtn = controls.createEl("button", {
@@ -740,7 +722,7 @@ export default class SoundboardView extends ItemView {
     setIcon(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
-      void this.nextInPlaylist(pl);
+      void this.plugin.nextInPlaylist(pl);
     };
 
     const gearBtn = controls.createEl("button", {
@@ -755,154 +737,11 @@ export default class SoundboardView extends ItemView {
         pl.path,
       ).open();
 
-    const st = this.ensurePlaylistState(pl.path);
-    if (st.active) {
+    const isActive = this.plugin.isPlaylistActive(pl.path);
+    if (isActive) {
       row.addClass("playing");
       stopBtn.classList.add("playing");
     }
-  }
-
-  private ensurePlaylistState(pPath: string): PlaylistPlayState {
-    let st = this.playlistStates.get(pPath);
-    if (!st) {
-      st = { index: 0, active: false };
-      this.playlistStates.set(pPath, st);
-    }
-    return st;
-  }
-
-  private async startPlaylist(pl: PlaylistInfo, startIndex = 0) {
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs =
-      pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
-
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch {
-        // ignore errors when stopping an already-stopped handle
-      }
-      st.handle = undefined;
-    }
-
-    await this.playPlaylistIndex(
-      pl,
-      Math.max(0, Math.min(startIndex, pl.tracks.length - 1)),
-    );
-  }
-
-  private async playPlaylistIndex(pl: PlaylistInfo, index: number) {
-    const st = this.ensurePlaylistState(pl.path);
-    if (pl.tracks.length === 0) return;
-    const file = pl.tracks[index];
-
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const vol = pref.volume ?? 1;
-    const fadeInMs =
-      pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs;
-
-    const handle = await this.plugin.engine.play(file, {
-      volume: vol,
-      loop: false,
-      fadeInMs,
-    });
-    st.index = index;
-    st.handle = handle;
-    st.active = true;
-    this.playIdToPlaylist.set(handle.id, pl.path);
-
-    this.updatePlayingVisuals();
-  }
-
-  private async stopPlaylist(pl: PlaylistInfo) {
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs =
-      pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
-
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch {
-        // ignore errors when stopping an already-stopped handle
-      }
-      st.handle = undefined;
-    }
-    st.active = false;
-    this.updatePlayingVisuals();
-  }
-
-  private async nextInPlaylist(pl: PlaylistInfo) {
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs =
-      pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
-
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch {
-        // ignore errors when stopping an already-stopped handle
-      }
-      st.handle = undefined;
-    }
-
-    const nextIndex = (st.index + 1) % Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, nextIndex);
-  }
-
-  private async prevInPlaylist(pl: PlaylistInfo) {
-    const st = this.ensurePlaylistState(pl.path);
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const fadeOutMs =
-      pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs;
-
-    if (st.handle) {
-      try {
-        await st.handle.stop({ fadeOutMs });
-      } catch {
-        // ignore errors when stopping an already-stopped handle
-      }
-      st.handle = undefined;
-    }
-
-    const prevIndex =
-      (st.index - 1 + pl.tracks.length) %
-      Math.max(1, pl.tracks.length);
-    await this.playPlaylistIndex(pl, prevIndex);
-  }
-
-  private async onTrackEndedNaturally(pPath: string) {
-    const st = this.ensurePlaylistState(pPath);
-    if (!st.active) return;
-    const pl = this.findPlaylistByPath(pPath);
-    if (!pl) return;
-
-    const pref = this.plugin.getPlaylistPref(pl.path);
-    const atLast = st.index >= pl.tracks.length - 1;
-    if (atLast) {
-      if (pref.loop) {
-        await this.playPlaylistIndex(pl, 0);
-      } else {
-        st.handle = undefined;
-        st.active = false;
-        this.updatePlayingVisuals();
-      }
-    } else {
-      await this.playPlaylistIndex(pl, st.index + 1);
-    }
-  }
-
-  private findPlaylistByPath(pPath: string): PlaylistInfo | null {
-    if (!this.library) return null;
-    for (const f of this.library.topFolders) {
-      const c = this.library.byFolder[f];
-      if (!c) continue;
-      const pl = c.playlists.find((p) => p.path === pPath);
-      if (pl) return pl;
-    }
-    return null;
   }
 
   private updatePlayingVisuals() {
@@ -934,8 +773,8 @@ export default class SoundboardView extends ItemView {
       );
     pbtns.forEach((b) => {
       const p = b.dataset.playlist || "";
-      const st = this.playlistStates.get(p);
-      b.toggleClass("playing", !!st?.active);
+      const active = this.plugin.isPlaylistActive(p);
+      b.toggleClass("playing", active);
     });
 
     // Playlists – rows in simple view
@@ -945,8 +784,8 @@ export default class SoundboardView extends ItemView {
       );
     plRows.forEach((r) => {
       const p = r.dataset.playlist || "";
-      const st = this.playlistStates.get(p);
-      r.toggleClass("playing", !!st?.active);
+      const active = this.plugin.isPlaylistActive(p);
+      r.toggleClass("playing", active);
     });
   }
 }

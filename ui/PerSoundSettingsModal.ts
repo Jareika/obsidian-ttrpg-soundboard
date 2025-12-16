@@ -73,6 +73,19 @@ export class PerSoundSettingsModal extends Modal {
       );
 
     new Setting(contentEl)
+      .setName("Insert note button")
+      .setDesc(
+        "Insert a Markdown button for this sound into the active note.",
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Insert button")
+          .onClick(() => {
+            this.plugin.insertSoundButtonIntoActiveNote(this.filePath);
+          }),
+      );
+
+    new Setting(contentEl)
       .addButton((b) =>
         b
           .setButtonText("Restore defaults")

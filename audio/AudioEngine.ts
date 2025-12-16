@@ -10,14 +10,45 @@ export interface StopOptions {
   fadeOutMs?: number;
 }
 
-export interface PlaybackEvent {
-  type: "start" | "stop";
-  filePath: string;
-  id: string;
-  reason?: "ended" | "stopped"; // ended = natural end of the file, stopped = stopped manually
-}
+export type PlaybackEvent =
+  | {
+      type: "start";
+      filePath: string;
+      id: string;
+    }
+  | {
+      type: "stop";
+      filePath: string;
+      id: string;
+      reason?: "ended" | "stopped";
+    }
+  | {
+      type: "pause";
+      filePath: string;
+      id: string;
+    }
+  | {
+      type: "resume";
+      filePath: string;
+      id: string;
+    };
 
 type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
+
+interface PlaybackRecord {
+  id: string;
+  source: AudioBufferSourceNode | null;
+  gain: GainNode;
+  file: TFile;
+  buffer: AudioBuffer;
+  loop: boolean;
+  state: "playing" | "paused";
+  startTime: number; // AudioContext time when the current segment started
+  offset: number; // seconds already played before startTime (for resume)
+  lastVolume: number; // last non-zero volume used for fades
+}
+
+export type PathPlaybackState = "none" | "playing" | "paused" | "mixed";
 
 export class AudioEngine {
   private app: App;
@@ -30,16 +61,7 @@ export class AudioEngine {
   private totalBufferedBytes = 0;
   private maxCachedBytes = 512 * 1024 * 1024; // default 512 MB
 
-  private playing = new Map<
-    string,
-    {
-      id: string;
-      source: AudioBufferSourceNode;
-      gain: GainNode;
-      file: TFile;
-      stopped: boolean;
-    }
-  >();
+  private playing = new Map<string, PlaybackRecord>();
   private masterVolume = 1;
   private listeners = new Set<(e: PlaybackEvent) => void>();
 
@@ -47,12 +69,24 @@ export class AudioEngine {
     this.app = app;
   }
 
-  // ===== Public API =====
+  // ===== Event subscription =====
 
   on(cb: (e: PlaybackEvent) => void) {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
   }
+
+  private emit(e: PlaybackEvent) {
+    this.listeners.forEach((fn) => {
+      try {
+        void fn(e);
+      } catch {
+        // Ignore listener errors so one bad listener does not break others
+      }
+    });
+  }
+
+  // ===== Master volume / cache config =====
 
   setMasterVolume(v: number) {
     this.masterVolume = Math.max(0, Math.min(1, v));
@@ -88,6 +122,8 @@ export class AudioEngine {
     this.bufferUsage.clear();
     this.totalBufferedBytes = 0;
   }
+
+  // ===== Audio context / buffer loading =====
 
   async ensureContext() {
     if (!this.ctx) {
@@ -145,6 +181,8 @@ export class AudioEngine {
     return audioBuffer;
   }
 
+  // ===== Playback control =====
+
   async play(file: TFile, opts: PlayOptions = {}) {
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
@@ -153,17 +191,19 @@ export class AudioEngine {
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.loop = !!opts.loop;
-
     const gain = ctx.createGain();
     gain.gain.value = 0;
 
-    source.connect(gain);
+    const loop = !!opts.loop;
+    source.loop = loop;
+
     gain.connect(this.masterGain!);
+    source.connect(gain);
 
     const now = ctx.currentTime;
     const targetVol = Math.max(0, Math.min(1, opts.volume ?? 1));
     const fadeIn = (opts.fadeInMs ?? 0) / 1000;
+
     if (fadeIn > 0) {
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(targetVol, now + fadeIn);
@@ -171,15 +211,26 @@ export class AudioEngine {
       gain.gain.setValueAtTime(targetVol, now);
     }
 
-    source.start();
-
-    const rec = { id, source, gain, file, stopped: false };
+    const rec: PlaybackRecord = {
+      id,
+      source,
+      gain,
+      file,
+      buffer,
+      loop,
+      state: "playing",
+      startTime: now,
+      offset: 0,
+      lastVolume: targetVol,
+    };
     this.playing.set(id, rec);
-    this.emit({ type: "start", filePath: file.path, id });
 
     source.onended = () => {
-      const r = this.playing.get(id);
-      if (!r || r.stopped) return;
+      const existing = this.playing.get(id);
+      if (!existing) return;
+      // Ignore onended if the record was paused (we stopped it manually)
+      if (existing.state !== "playing") return;
+
       this.playing.delete(id);
       this.emit({
         type: "stop",
@@ -188,6 +239,10 @@ export class AudioEngine {
         reason: "ended",
       });
     };
+
+    source.start();
+
+    this.emit({ type: "start", filePath: file.path, id });
 
     return {
       id,
@@ -220,8 +275,107 @@ export class AudioEngine {
   }
 
   /**
-   * Set the volume (0..1) for all currently playing instances
-   * of a given file path (this does not touch the global master gain).
+   * Pause all currently playing instances of the given file.
+   * If fadeOutMs > 0, a short fade-out is applied before pausing.
+   */
+  async pauseByFile(file: TFile, fadeOutMs = 0) {
+    if (!this.ctx) return;
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path && p.state === "playing",
+    );
+    if (!targets.length) return;
+
+    const ctx = this.ctx;
+    const fadeSec = (fadeOutMs ?? 0) / 1000;
+
+    await Promise.all(
+      targets.map(
+        (rec) =>
+          new Promise<void>((resolve) => {
+            if (!ctx || !rec.source) {
+              this.pauseRecord(rec);
+              this.emit({
+                type: "pause",
+                filePath: rec.file.path,
+                id: rec.id,
+              });
+              resolve();
+              return;
+            }
+
+            if (fadeSec > 0) {
+              const n = ctx.currentTime;
+              const cur = rec.gain.gain.value;
+              // Remember the last audible volume for resume fade-in
+              rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
+              rec.gain.gain.cancelScheduledValues(n);
+              rec.gain.gain.setValueAtTime(cur, n);
+              rec.gain.gain.linearRampToValueAtTime(0, n + fadeSec);
+
+              window.setTimeout(() => {
+                this.pauseRecord(rec);
+                this.emit({
+                  type: "pause",
+                  filePath: rec.file.path,
+                  id: rec.id,
+                });
+                resolve();
+              }, Math.max(1, fadeOutMs));
+            } else {
+              this.pauseRecord(rec);
+              this.emit({
+                type: "pause",
+                filePath: rec.file.path,
+                id: rec.id,
+              });
+              resolve();
+            }
+          }),
+      ),
+    );
+  }
+
+  /**
+   * Resume all paused instances of the given file.
+   * If fadeInMs > 0, a short fade-in is applied from volume 0.
+   */
+  async resumeByFile(file: TFile, fadeInMs = 0) {
+    const targets = [...this.playing.values()].filter(
+      (p) => p.file.path === file.path && p.state === "paused",
+    );
+    if (!targets.length) return;
+
+    await this.ensureContext();
+    const ctx = this.ctx!;
+    const fadeSec = (fadeInMs ?? 0) / 1000;
+
+    for (const rec of targets) {
+      const now = ctx.currentTime;
+      const target =
+        rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+
+      if (fadeSec > 0) {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(0, now);
+        rec.gain.gain.linearRampToValueAtTime(target, now + fadeSec);
+      } else {
+        rec.gain.gain.cancelScheduledValues(now);
+        rec.gain.gain.setValueAtTime(target, now);
+      }
+      rec.lastVolume = target;
+
+      this.resumeRecord(rec);
+      this.emit({
+        type: "resume",
+        filePath: rec.file.path,
+        id: rec.id,
+      });
+    }
+  }
+
+  /**
+   * Set the volume (0..1) for all active instances of a given file path.
+   * This does not touch the global master gain.
    */
   setVolumeForPath(path: string, volume: number) {
     if (!this.ctx) return;
@@ -232,14 +386,42 @@ export class AudioEngine {
       if (rec.file.path === path) {
         rec.gain.gain.cancelScheduledValues(now);
         rec.gain.gain.setValueAtTime(v, now);
+        rec.lastVolume = v;
       }
     }
   }
 
+  /**
+   * Returns a unique list of file paths that have at least one
+   * active playback record (playing or paused).
+   */
   getPlayingFilePaths(): string[] {
     const set = new Set<string>();
     for (const v of this.playing.values()) set.add(v.file.path);
     return [...set];
+  }
+
+  /**
+   * Summarised playback state for a given file path:
+   * - "none"    = no active sessions
+   * - "playing" = at least one playing, none paused
+   * - "paused"  = at least one paused, none playing
+   * - "mixed"   = both playing and paused sessions exist
+   */
+  getPathPlaybackState(path: string): PathPlaybackState {
+    let hasPlaying = false;
+    let hasPaused = false;
+
+    for (const rec of this.playing.values()) {
+      if (rec.file.path !== path) continue;
+      if (rec.state === "playing") hasPlaying = true;
+      else if (rec.state === "paused") hasPaused = true;
+    }
+
+    if (!hasPlaying && !hasPaused) return "none";
+    if (hasPlaying && !hasPaused) return "playing";
+    if (!hasPlaying && hasPaused) return "paused";
+    return "mixed";
   }
 
   /**
@@ -259,40 +441,47 @@ export class AudioEngine {
 
   // ===== Internal helpers =====
 
-  private emit(e: PlaybackEvent) {
-    this.listeners.forEach((fn) => {
-      try {
-        void fn(e);
-      } catch {
-        // Ignore listener errors so one bad listener does not break others
-      }
-    });
-  }
-
   private stopById(id: string, sOpts?: StopOptions): Promise<void> {
     const rec = this.playing.get(id);
-    if (!rec || rec.stopped) return Promise.resolve();
-    rec.stopped = true;
-    const ctx = this.ctx!;
+    if (!rec) return Promise.resolve();
+
+    this.playing.delete(id);
+
+    const ctx = this.ctx;
     const fadeOut = (sOpts?.fadeOutMs ?? 0) / 1000;
-    const n = ctx.currentTime;
+    const filePath = rec.file.path;
+    const source = rec.source;
+    const gain = rec.gain;
+
+    if (!ctx || !source) {
+      // Already paused or no live node – emit stop immediately
+      this.emit({
+        type: "stop",
+        filePath,
+        id,
+        reason: "stopped",
+      });
+      return Promise.resolve();
+    }
 
     return new Promise<void>((resolve) => {
+      const n = ctx.currentTime;
+
       if (fadeOut > 0) {
-        rec.gain.gain.cancelScheduledValues(n);
-        const cur = rec.gain.gain.value;
-        rec.gain.gain.setValueAtTime(cur, n);
-        rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
+        gain.gain.cancelScheduledValues(n);
+        const cur = gain.gain.value;
+        gain.gain.setValueAtTime(cur, n);
+        gain.gain.linearRampToValueAtTime(0, n + fadeOut);
+
         window.setTimeout(() => {
           try {
-            rec.source.stop();
+            source.stop();
           } catch {
             // Ignore errors when stopping an already-stopped source
           }
-          this.playing.delete(id);
           this.emit({
             type: "stop",
-            filePath: rec.file.path,
+            filePath,
             id,
             reason: "stopped",
           });
@@ -300,20 +489,81 @@ export class AudioEngine {
         }, Math.max(1, sOpts?.fadeOutMs ?? 0));
       } else {
         try {
-          rec.source.stop();
+          source.stop();
         } catch {
           // Ignore errors when stopping an already-stopped source
         }
-        this.playing.delete(id);
         this.emit({
           type: "stop",
-          filePath: rec.file.path,
+          filePath,
           id,
           reason: "stopped",
         });
         resolve();
       }
     });
+  }
+
+  private pauseRecord(rec: PlaybackRecord) {
+    if (!this.ctx) return;
+    if (rec.state !== "playing" || !rec.source) return;
+
+    const ctx = this.ctx;
+    const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
+    const newOffset = rec.offset + elapsed;
+
+    rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
+    rec.state = "paused";
+
+    try {
+      rec.source.stop();
+    } catch {
+      // Ignore errors if already stopped
+    }
+    rec.source = null;
+  }
+
+  private resumeRecord(rec: PlaybackRecord) {
+    if (!this.ctx) return;
+    if (rec.state !== "paused") return;
+
+    const ctx = this.ctx;
+    const buffer = rec.buffer;
+
+    if (!buffer) return;
+
+    // Clamp offset near the end of the buffer
+    const maxOffset = Math.max(0, buffer.duration - 0.001);
+    const offset = Math.max(0, Math.min(rec.offset, maxOffset));
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = rec.loop;
+
+    const gain = rec.gain;
+    source.connect(gain);
+
+    const id = rec.id;
+
+    source.onended = () => {
+      const existing = this.playing.get(id);
+      if (!existing) return;
+      if (existing.state !== "playing") return;
+
+      this.playing.delete(id);
+      this.emit({
+        type: "stop",
+        filePath: existing.file.path,
+        id,
+        reason: "ended",
+      });
+    };
+
+    rec.source = source;
+    rec.state = "playing";
+    rec.startTime = ctx.currentTime;
+
+    source.start(0, offset);
   }
 
   private touchBufferKey(key: string) {

@@ -1,8 +1,4 @@
-import {
-  App,
-  FuzzySuggestModal,
-  TFile,
-} from "obsidian";
+import { App, FuzzySuggestModal, TFile } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
 
 export interface QuickPlayItem {
@@ -13,38 +9,31 @@ export interface QuickPlayItem {
 
 export class QuickPlayModal extends FuzzySuggestModal<QuickPlayItem> {
   private plugin: TTRPGSoundboardPlugin;
+  private items: QuickPlayItem[];
 
-  constructor(app: App, plugin: TTRPGSoundboardPlugin) {
+  constructor(
+    app: App,
+    plugin: TTRPGSoundboardPlugin,
+    items: QuickPlayItem[],
+  ) {
     super(app);
     this.plugin = plugin;
-    this.setPlaceholder("Type to search sounds...");
+    this.items = items;
+    this.setPlaceholder("Search sound to play…");
   }
 
   getItems(): QuickPlayItem[] {
-    return this.plugin.buildQuickPlayItems();
+    return this.items;
   }
 
   getItemText(item: QuickPlayItem): string {
-    if (item.context) {
+    if (item.context && item.context !== "(root)") {
       return `${item.label} — ${item.context}`;
     }
     return item.label;
   }
 
-  renderSuggestion(item: QuickPlayItem, el: HTMLElement) {
-    el.empty();
-
-    const nameEl = el.createDiv();
-    nameEl.textContent = item.label;
-
-    if (item.context) {
-      const ctxEl = el.createDiv();
-      ctxEl.addClass("mod-muted");
-      ctxEl.textContent = item.context;
-    }
-  }
-
-  onChooseItem(item: QuickPlayItem) {
+  onChooseItem(item: QuickPlayItem): void {
     void this.plugin.playFromQuickPicker(item.file);
   }
 }
