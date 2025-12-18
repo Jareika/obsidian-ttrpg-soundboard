@@ -165,7 +165,9 @@ export class AudioEngine {
       bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      // decodeAudioData also returns a Promise in modern browsers.
+      // Here we intentionally use the callback signature and ignore that Promise.
+      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
 
     if (this.maxCachedBytes > 0) {

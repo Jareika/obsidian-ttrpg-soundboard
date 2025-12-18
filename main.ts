@@ -455,7 +455,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   isAmbiencePath(path: string): boolean {
     const parts = path.toLowerCase().split("/");
-       return parts.includes("ambience");
+    return parts.includes("ambience");
   }
 
   /**
@@ -708,7 +708,14 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           reject(new Error("Failed to load audio metadata"));
         };
       } catch (err) {
-        reject(err);
+        // Always reject with an Error instance to satisfy lint rules
+        reject(
+          err instanceof Error
+            ? err
+            : new Error(
+                err != null ? String(err) : "Unknown error",
+              ),
+        );
       }
     });
   }
@@ -884,7 +891,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     const st = this.ensurePlaylistState(pl);
     if (!st.indices.length) {
-           st.indices = this.buildFullTrackIndexList(trackCount);
+      st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;
     }
 

@@ -120,7 +120,7 @@ var AudioEngine = class {
     const ctx = this.ctx;
     const arrBuf = bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
     const audioBuffer = await new Promise((resolve, reject) => {
-      ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
+      void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
     if (this.maxCachedBytes > 0) {
       const approxBytes = audioBuffer.length * audioBuffer.numberOfChannels * 4;
@@ -2260,7 +2260,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
           reject(new Error("Failed to load audio metadata"));
         };
       } catch (err) {
-        reject(err);
+        reject(
+          err instanceof Error ? err : new Error(
+            err != null ? String(err) : "Unknown error"
+          )
+        );
       }
     });
   }
