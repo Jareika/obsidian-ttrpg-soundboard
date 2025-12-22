@@ -80,6 +80,7 @@
   align-items: center;
   justify-content: center;
   height: 28px;
+  min-height: 28px;
   padding: 0 10px;
   box-sizing: border-box;
   border: 1px solid var(--background-modifier-border);
@@ -178,6 +179,8 @@
   align-items: center;
   justify-content: center;
   height: 28px;
+  min-height: 28px;
+  max-height: 28px;
   box-sizing: border-box;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
@@ -188,6 +191,8 @@
 /* Square icon buttons */
 .ttrpg-sb-icon-btn {
   width: 28px;
+  min-width: 28px;
+  max-width: 28px;
   padding: 0;
 }
 
@@ -215,11 +220,17 @@
   }
   .ttrpg-sb-icon-btn {
     width: 24px;
+    min-width: 24px;
+    max-width: 24px;
     height: 24px;
+    min-height: 24px;
+    max-height: 24px;
     border-radius: 5px;
   }
   .ttrpg-sb-stop {
     height: 24px;
+    min-height: 24px;
+    max-height: 24px;
     padding: 0 8px;
   }
   .ttrpg-sb-title {
@@ -324,6 +335,8 @@
   border: none;
   background: transparent;
   height: auto;
+  min-height: 0;
+  max-height: none;
 }
 
 /* Also no filled box in playing state; highlight happens on the image */
@@ -357,4 +370,38 @@
   background: transparent !important;
   box-shadow: none !important;
   outline: none !important;
+}
+
+.ttrpg-sb-view .ttrpg-sb-icon-btn,
+.ttrpg-sb-view .ttrpg-sb-stop,
+.ttrpg-sb-view .ttrpg-sb-stop-all {
+  box-sizing: border-box !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin: 0 !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.ttrpg-sb-view .ttrpg-sb-stop,
+.ttrpg-sb-view .ttrpg-sb-stop-all {
+  line-height: 28px !important;
+}
+
+@media (max-width: 1024px) {
+  .ttrpg-sb-view .ttrpg-sb-icon-btn,
+  .ttrpg-sb-view .ttrpg-sb-stop,
+  .ttrpg-sb-view .ttrpg-sb-stop-all {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+  }
+
+  .ttrpg-sb-view .ttrpg-sb-stop,
+  .ttrpg-sb-view .ttrpg-sb-stop-all {
+    line-height: 24px !important;
+  }
 }

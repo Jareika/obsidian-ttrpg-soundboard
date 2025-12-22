@@ -69,6 +69,47 @@ interface PlaylistRuntimeState {
   active: boolean;
 }
 
+// Convert unknown thrown values into a usable Error without relying on "[object Object]" stringification.
+function unknownToError(
+  err: unknown,
+  fallbackMessage = "Unknown error",
+): Error {
+  if (err instanceof Error) return err;
+
+  if (typeof err === "string") return new Error(err);
+
+  if (
+    typeof err === "number" ||
+    typeof err === "boolean" ||
+    typeof err === "bigint"
+  ) {
+    return new Error(String(err));
+  }
+
+  if (typeof err === "symbol") {
+    return new Error(err.description ?? err.toString());
+  }
+
+  // Some APIs throw objects that contain a "message" but are not instanceof Error (e.g. certain DOM exceptions).
+  if (typeof err === "object" && err !== null) {
+    const maybeMsg = (err as { message?: unknown }).message;
+    if (typeof maybeMsg === "string" && maybeMsg.trim()) {
+      return new Error(maybeMsg);
+    }
+  }
+
+  if (err == null) return new Error(fallbackMessage);
+
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return new Error(json);
+  } catch {
+    // ignore
+  }
+
+  return new Error(fallbackMessage);
+}
+
 function hasSetLibrary(
   v: unknown,
 ): v is { setLibrary: (lib: LibraryModel) => void } {
@@ -708,14 +749,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           reject(new Error("Failed to load audio metadata"));
         };
       } catch (err) {
-        // Always reject with an Error instance to satisfy lint rules
-        reject(
-          err instanceof Error
-            ? err
-            : new Error(
-                err != null ? String(err) : "Unknown error",
-              ),
-        );
+        reject(unknownToError(err));
       }
     });
   }
@@ -863,6 +897,16 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     if (!trackCount) return;
 
     const st = this.ensurePlaylistState(pl);
+
+    // If the playlist was started from a note button that targets a single track (#N),
+    // the runtime selection contains only that one index. When using Next/Prev in the UI,
+    // switch to the full playlist so navigation continues from that track.
+    if (st.indices.length === 1 && trackCount > 1) {
+      const currentTrackIdx = st.indices[st.position] ?? st.indices[0] ?? 0;
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = Math.max(0, Math.min(trackCount - 1, currentTrackIdx));
+    }
+
     if (!st.indices.length) {
       st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;
@@ -890,6 +934,14 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     if (!trackCount) return;
 
     const st = this.ensurePlaylistState(pl);
+
+    // See nextInPlaylist() for rationale.
+    if (st.indices.length === 1 && trackCount > 1) {
+      const currentTrackIdx = st.indices[st.position] ?? st.indices[0] ?? 0;
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = Math.max(0, Math.min(trackCount - 1, currentTrackIdx));
+    }
+
     if (!st.indices.length) {
       st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;

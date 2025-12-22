@@ -1745,6 +1745,30 @@ var QuickPlayModal = class extends import_obsidian7.FuzzySuggestModal {
 };
 
 // main.ts
+function unknownToError(err, fallbackMessage = "Unknown error") {
+  var _a;
+  if (err instanceof Error) return err;
+  if (typeof err === "string") return new Error(err);
+  if (typeof err === "number" || typeof err === "boolean" || typeof err === "bigint") {
+    return new Error(String(err));
+  }
+  if (typeof err === "symbol") {
+    return new Error((_a = err.description) != null ? _a : err.toString());
+  }
+  if (typeof err === "object" && err !== null) {
+    const maybeMsg = err.message;
+    if (typeof maybeMsg === "string" && maybeMsg.trim()) {
+      return new Error(maybeMsg);
+    }
+  }
+  if (err == null) return new Error(fallbackMessage);
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return new Error(json);
+  } catch (e) {
+  }
+  return new Error(fallbackMessage);
+}
 function hasSetLibrary(v) {
   return !!v && typeof v === "object" && typeof v["setLibrary"] === "function";
 }
@@ -2260,11 +2284,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
           reject(new Error("Failed to load audio metadata"));
         };
       } catch (err) {
-        reject(
-          err instanceof Error ? err : new Error(
-            err != null ? String(err) : "Unknown error"
-          )
-        );
+        reject(unknownToError(err));
       }
     });
   }
@@ -2373,16 +2393,21 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     st.active = false;
   }
   async nextInPlaylist(pl) {
-    var _a;
+    var _a, _b, _c;
     const trackCount = pl.tracks.length;
     if (!trackCount) return;
     const st = this.ensurePlaylistState(pl);
+    if (st.indices.length === 1 && trackCount > 1) {
+      const currentTrackIdx = (_b = (_a = st.indices[st.position]) != null ? _a : st.indices[0]) != null ? _b : 0;
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = Math.max(0, Math.min(trackCount - 1, currentTrackIdx));
+    }
     if (!st.indices.length) {
       st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;
     }
     const pref = this.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    const fadeOutMs = (_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs;
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
@@ -2394,16 +2419,21 @@ var TTRPGSoundboardPlugin = class extends import_obsidian8.Plugin {
     await this.playPlaylistIndex(pl, st, nextPos);
   }
   async prevInPlaylist(pl) {
-    var _a;
+    var _a, _b, _c;
     const trackCount = pl.tracks.length;
     if (!trackCount) return;
     const st = this.ensurePlaylistState(pl);
+    if (st.indices.length === 1 && trackCount > 1) {
+      const currentTrackIdx = (_b = (_a = st.indices[st.position]) != null ? _a : st.indices[0]) != null ? _b : 0;
+      st.indices = this.buildFullTrackIndexList(trackCount);
+      st.position = Math.max(0, Math.min(trackCount - 1, currentTrackIdx));
+    }
     if (!st.indices.length) {
       st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;
     }
     const pref = this.getPlaylistPref(pl.path);
-    const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+    const fadeOutMs = (_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs;
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
