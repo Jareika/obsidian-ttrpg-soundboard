@@ -2,21 +2,25 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type TTRPGSoundboardPlugin from "./main";
 
 export interface SoundboardSettings {
-  rootFolder: string;        // e.g. "Soundbar"
+  rootFolder: string; // e.g. "Soundbar"
   includeRootFiles: boolean; // false = only subfolders
-  folders: string[];         // legacy fallback when rootFolder is empty
+  folders: string[]; // legacy fallback when rootFolder is empty
   extensions: string[];
   defaultFadeInMs: number;
   defaultFadeOutMs: number;
   allowOverlap: boolean;
   masterVolume: number;
-  ambienceVolume: number;    // global ambience multiplier 0..1
-  simpleView: boolean;       // global default: true = simple list
+  mediaElementThresholdMB: number; // 0 disables MediaElement playback
+  ambienceVolume: number; // global ambience multiplier 0..1
+  simpleView: boolean; // global default: true = simple list
   folderViewModes: Record<string, "grid" | "simple">; // folderPath -> mode
-  tileHeightPx: number;      // tile height in px
-  noteIconSizePx: number;    // max height for note button thumbnails in px
+  tileHeightPx: number; // tile height in px
+  noteIconSizePx: number; // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
-  maxAudioCacheMB: number;   // upper limit for decoded-audio cache in MB (0 = no caching)
+  maxAudioCacheMB: number; // upper limit for decoded-audio cache in MB (0 = no caching)
+
+  thumbnailFolderEnabled: boolean; // if enabled, thumbnails are looked up in a dedicated folder
+  thumbnailFolderPath: string; // vault path to the thumbnail folder
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -28,6 +32,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   defaultFadeOutMs: 3000,
   allowOverlap: true,
   masterVolume: 1,
+  mediaElementThresholdMB: 25,
   ambienceVolume: 1,
   simpleView: false,
   folderViewModes: {},
@@ -35,6 +40,9 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   noteIconSizePx: 40,
   toolbarFourFolders: false,
   maxAudioCacheMB: 512, // default 512 MB of decoded audio
+
+  thumbnailFolderEnabled: false,
+  thumbnailFolderPath: "",
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -54,9 +62,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Root folder")
-      .setDesc(
-        "Only subfolders under this folder are listed as options.",
-      )
+      .setDesc("Only subfolders under this folder are listed as options.")
       .addText((ti) =>
         ti
           .setPlaceholder("Soundbar")
@@ -166,6 +172,23 @@ export class SoundboardSettingTab extends PluginSettingTab {
             void this.plugin.saveSettings();
           }),
       );
+	  
+    new Setting(containerEl)
+      .setName("Threshold for faster large‑file audio playback (mb)")
+      .setDesc(
+        "Files larger than this threshold are played via the htmlaudioelement for faster startup without full decoding. Set to 0 to disable.",
+      )
+      .addSlider((s) =>
+        s
+          .setLimits(0, 512, 1)
+          .setValue(this.plugin.settings.mediaElementThresholdMB)
+          .setDynamicTooltip()
+          .onChange((v) => {
+            this.plugin.settings.mediaElementThresholdMB = v;
+            this.plugin.engine?.setMediaElementThresholdMB(v);
+            void this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Decoded audio cache.")
@@ -218,9 +241,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
       );
 
     // Per-folder view config
-    new Setting(containerEl)
-      .setName("Per-folder view mode")
-      .setHeading();
+    new Setting(containerEl).setName("Per-folder view mode").setHeading();
 
     containerEl.createEl("p", {
       text: "For each folder you can override the global default: inherit, grid, or simple list.",
@@ -232,14 +253,10 @@ export class SoundboardSettingTab extends PluginSettingTab {
     const rootRegex =
       rootFolder != null && rootFolder !== ""
         ? new RegExp(
-            `^${rootFolder.replace(
-              /[.*+?^${}()|[\]\\]/g,
-              "\\$&",
-            )}/?`,
+            `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`,
           )
         : null;
-    const makeLabel = (f: string) =>
-      rootRegex ? f.replace(rootRegex, "") || f : f;
+    const makeLabel = (f: string) => (rootRegex ? f.replace(rootRegex, "") || f : f);
 
     if (topFolders.length === 0) {
       containerEl.createEl("p", {
@@ -251,14 +268,10 @@ export class SoundboardSettingTab extends PluginSettingTab {
         const map = this.plugin.settings.folderViewModes ?? {};
         const override = map[folderPath]; // "grid" | "simple" | undefined
 
-        const setting = new Setting(containerEl)
-          .setName(label)
-          .setDesc(folderPath);
+        const setting = new Setting(containerEl).setName(label).setDesc(folderPath);
 
         const globalIsSimple = this.plugin.settings.simpleView;
-        const inheritLabel = globalIsSimple
-          ? "Inherit (simple list)"
-          : "Inherit (grid)";
+        const inheritLabel = globalIsSimple ? "Inherit (simple list)" : "Inherit (grid)";
 
         setting.addDropdown((dd) => {
           dd.addOption("inherit", inheritLabel);
@@ -303,6 +316,43 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.applyCssVars();
             void this.plugin.saveSettings();
           }),
+      );
+
+    // Thumbnails
+    new Setting(containerEl).setName("Thumbnails").setHeading();
+
+    const thumbFolderSetting = new Setting(containerEl)
+      .setName("Thumbnail folder path")
+      .setDesc(
+        "Vault path to the folder containing thumbnails. When enabled, thumbnails are looked up only in this folder (by matching base filename).",
+      )
+      .addText((ti) =>
+        ti
+          .setPlaceholder("Soundbar/_thumbnails")
+          .setValue(this.plugin.settings.thumbnailFolderPath)
+          .onChange((v) => {
+            this.plugin.settings.thumbnailFolderPath = v.trim();
+            void this.plugin.saveSettings();
+            this.plugin.rescan();
+            this.plugin.refreshViews();
+          }),
+      );
+
+    thumbFolderSetting.setDisabled(!this.plugin.settings.thumbnailFolderEnabled);
+
+    new Setting(containerEl)
+      .setName("Use shared thumbnail folder")
+      .setDesc(
+        "If enabled, the plugin looks for thumbnails in the shared folder instead of next to audio files.",
+      )
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.thumbnailFolderEnabled).onChange((v) => {
+          this.plugin.settings.thumbnailFolderEnabled = v;
+          void this.plugin.saveSettings();
+          thumbFolderSetting.setDisabled(!v);
+          this.plugin.rescan();
+          this.plugin.refreshViews();
+        }),
       );
   }
 }

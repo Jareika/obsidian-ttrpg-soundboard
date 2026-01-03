@@ -8,7 +8,7 @@ export interface PlaylistInfo {
   name: string; // folder name
   parent: string; // path of the parent (top-level) folder
   tracks: TFile[]; // audio files inside the playlist folder (recursively)
-  cover?: TFile; // cover.xx file if present, otherwise first image file
+  cover?: TFile; // cover image (either from playlist folder or from shared thumbnail folder)
 }
 
 export interface FolderContent {
@@ -40,17 +40,9 @@ export function listSubfolders(app: App, rootFolder: string): string[] {
 /**
  * Legacy helper: search a list of folders recursively for audio files.
  */
-export function findAudioFiles(
-  app: App,
-  folders: string[],
-  extensions: string[],
-): TFile[] {
-  const exts = new Set(
-    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
-  );
-  const roots = (folders ?? [])
-    .map((f) => normalizeFolder(f))
-    .filter(Boolean);
+export function findAudioFiles(app: App, folders: string[], extensions: string[]): TFile[] {
+  const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
+  const roots = (folders ?? []).map((f) => normalizeFolder(f)).filter(Boolean);
 
   const out: TFile[] = [];
   for (const f of app.vault.getAllLoadedFiles()) {
@@ -62,9 +54,7 @@ export function findAudioFiles(
       out.push(f);
       continue;
     }
-    const inRoot = roots.some(
-      (r) => f.path === r || f.path.startsWith(r + "/"),
-    );
+    const inRoot = roots.some((r) => f.path === r || f.path.startsWith(r + "/"));
     if (inRoot) out.push(f);
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
@@ -82,6 +72,7 @@ export function buildLibrary(
     foldersLegacy?: string[];
     exts: string[];
     includeRootFiles?: boolean;
+    thumbnailFolder?: string; // if set, playlist covers are looked up there by playlist folder name
   },
 ): LibraryModel {
   if (opts.rootFolder && opts.rootFolder.trim()) {
@@ -90,10 +81,11 @@ export function buildLibrary(
       opts.rootFolder,
       opts.exts,
       !!opts.includeRootFiles,
+      opts.thumbnailFolder,
     );
   }
   const folders = (opts.foldersLegacy ?? []).filter(Boolean);
-  return buildLibraryFromFolders(app, folders, opts.exts);
+  return buildLibraryFromFolders(app, folders, opts.exts, opts.thumbnailFolder);
 }
 
 function buildLibraryFromRoot(
@@ -101,12 +93,11 @@ function buildLibraryFromRoot(
   rootFolder: string,
   extensions: string[],
   includeRootFiles: boolean,
+  thumbnailFolder?: string,
 ): LibraryModel {
   const root = normalizeFolder(rootFolder);
   const top = listSubfolders(app, root);
-  const exts = new Set(
-    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
-  );
+  const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
 
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: TFile[] = [];
@@ -119,8 +110,12 @@ function buildLibraryFromRoot(
 
   for (const folder of top) {
     const files = filesDirectlyIn(app, folder, exts);
-    const { playlists, ambienceSingles } =
-      directChildPlaylistsAndAmbienceSingles(app, folder, exts);
+    const { playlists, ambienceSingles } = directChildPlaylistsAndAmbienceSingles(
+      app,
+      folder,
+      exts,
+      thumbnailFolder,
+    );
 
     const combinedSingles = [...files, ...ambienceSingles];
     byFolder[folder] = { folder, files: combinedSingles, playlists };
@@ -134,18 +129,21 @@ function buildLibraryFromFolders(
   app: App,
   folders: string[],
   extensions: string[],
+  thumbnailFolder?: string,
 ): LibraryModel {
-  const exts = new Set(
-    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
-  );
+  const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
   const top = folders.map((f) => normalizeFolder(f)).filter(Boolean);
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: TFile[] = [];
 
   for (const folder of top) {
     const files = filesDirectlyIn(app, folder, exts);
-    const { playlists, ambienceSingles } =
-      directChildPlaylistsAndAmbienceSingles(app, folder, exts);
+    const { playlists, ambienceSingles } = directChildPlaylistsAndAmbienceSingles(
+      app,
+      folder,
+      exts,
+      thumbnailFolder,
+    );
     const combinedSingles = [...files, ...ambienceSingles];
     byFolder[folder] = { folder, files: combinedSingles, playlists };
     allSingles.push(...combinedSingles);
@@ -154,11 +152,7 @@ function buildLibraryFromFolders(
   return { rootFolder: undefined, topFolders: top, byFolder, allSingles };
 }
 
-function filesDirectlyIn(
-  app: App,
-  folderPath: string,
-  exts: Set<string>,
-): TFile[] {
+function filesDirectlyIn(app: App, folderPath: string, exts: Set<string>): TFile[] {
   const af = app.vault.getAbstractFileByPath(folderPath);
   if (!(af instanceof TFolder)) return [];
   const out: TFile[] = [];
@@ -181,20 +175,17 @@ function directChildPlaylistsAndAmbienceSingles(
   app: App,
   folderPath: string,
   exts: Set<string>,
+  thumbnailFolder?: string,
 ): { playlists: PlaylistInfo[]; ambienceSingles: TFile[] } {
   const af = app.vault.getAbstractFileByPath(folderPath);
-  if (!(af instanceof TFolder))
-    return { playlists: [], ambienceSingles: [] };
+  if (!(af instanceof TFolder)) return { playlists: [], ambienceSingles: [] };
 
-  const subs = af.children.filter(
-    (c): c is TFolder => c instanceof TFolder,
-  );
+  const subs = af.children.filter((c): c is TFolder => c instanceof TFolder);
   const playlists: PlaylistInfo[] = [];
   const ambienceSingles: TFile[] = [];
 
   for (const sub of subs) {
-    const isAmbience =
-      sub.name.toLowerCase() === AMBIENCE_FOLDER_NAME.toLowerCase();
+    const isAmbience = sub.name.toLowerCase() === AMBIENCE_FOLDER_NAME.toLowerCase();
 
     const tracks = collectAudioRecursive(sub, exts);
     if (tracks.length === 0) continue;
@@ -205,7 +196,7 @@ function directChildPlaylistsAndAmbienceSingles(
       continue;
     }
 
-    const cover = findCoverImage(sub);
+    const cover = findCoverImage(app, sub, thumbnailFolder);
     playlists.push({
       path: sub.path,
       name: sub.name,
@@ -237,18 +228,21 @@ function collectAudioRecursive(folder: TFolder, exts: Set<string>): TFile[] {
   return out;
 }
 
-function findCoverImage(folder: TFolder): TFile | undefined {
-  // 1) Prefer a cover.xxx file
+function findCoverImage(app: App, playlistFolder: TFolder, thumbnailFolder?: string): TFile | undefined {
+  if (thumbnailFolder && thumbnailFolder.trim()) {
+    return findImageByBaseName(app, thumbnailFolder, playlistFolder.name);
+  }
+
+  // 1) Prefer a cover.xxx file inside the playlist folder
   for (const ext of IMG_EXTS) {
-    const cand = folder.children.find(
-      (ch) =>
-        ch instanceof TFile &&
-        ch.name.toLowerCase() === `cover.${ext}`,
+    const cand = playlistFolder.children.find(
+      (ch) => ch instanceof TFile && ch.name.toLowerCase() === `cover.${ext}`,
     );
     if (cand instanceof TFile) return cand;
   }
-  // 2) Otherwise, use the first image file in the folder
-  const imgs = folder.children.filter(
+
+  // 2) Otherwise, use the first image file in the playlist folder
+  const imgs = playlistFolder.children.filter(
     (ch): ch is TFile =>
       ch instanceof TFile &&
       !!ch.extension &&
@@ -258,6 +252,16 @@ function findCoverImage(folder: TFolder): TFile | undefined {
   return imgs[0];
 }
 
+function findImageByBaseName(app: App, folderPath: string, baseName: string): TFile | undefined {
+  const folder = normalizeFolder(folderPath);
+  for (const ext of IMG_EXTS) {
+    const candPath = `${folder}/${baseName}.${ext}`;
+    const af = app.vault.getAbstractFileByPath(candPath);
+    if (af instanceof TFile) return af;
+  }
+  return undefined;
+}
+
 export function findAudioFilesUnderRoot(
   app: App,
   rootFolder: string,
@@ -265,9 +269,7 @@ export function findAudioFilesUnderRoot(
   includeRootFiles = false,
 ): TFile[] {
   const root = normalizeFolder(rootFolder);
-  const exts = new Set(
-    extensions.map((e) => e.toLowerCase().replace(/^\./, "")),
-  );
+  const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
   const out: TFile[] = [];
 
   for (const f of app.vault.getAllLoadedFiles()) {

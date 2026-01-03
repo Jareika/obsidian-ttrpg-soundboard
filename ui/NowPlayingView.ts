@@ -1,8 +1,7 @@
 import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
 
-export const VIEW_TYPE_TTRPG_NOWPLAYING =
-  "ttrpg-soundboard-nowplaying";
+export const VIEW_TYPE_TTRPG_NOWPLAYING = "ttrpg-soundboard-nowplaying";
 
 export default class NowPlayingView extends ItemView {
   plugin: TTRPGSoundboardPlugin;
@@ -29,14 +28,10 @@ export default class NowPlayingView extends ItemView {
   onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
 
-    this.playingPaths = new Set(
-      this.plugin.engine.getPlayingFilePaths(),
-    );
+    this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
 
     this.unsubEngine = this.plugin.engine.on(() => {
-      this.playingPaths = new Set(
-        this.plugin.engine.getPlayingFilePaths(),
-      );
+      this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
       this.render();
     });
 
@@ -78,13 +73,12 @@ export default class NowPlayingView extends ItemView {
     const af = this.app.vault.getAbstractFileByPath(path);
     const file = af instanceof TFile ? af : null;
 
-    const name =
-      file?.basename ??
-      path.split("/").pop() ??
-      path;
+    const name = file?.basename ?? path.split("/").pop() ?? path;
 
     const state = this.plugin.engine.getPathPlaybackState(path);
     const isPaused = state === "paused";
+
+    const activePlaylistPath = this.plugin.getActivePlaylistPathForTrackPath(path);
 
     const card = grid.createDiv({ cls: "ttrpg-sb-now-card" });
     if (isPaused) card.addClass("paused");
@@ -99,10 +93,7 @@ export default class NowPlayingView extends ItemView {
     });
     stopBtn.onclick = async () => {
       if (file) {
-        await this.plugin.engine.stopByFile(
-          file,
-          this.plugin.settings.defaultFadeOutMs,
-        );
+        await this.plugin.engine.stopByFile(file, this.plugin.settings.defaultFadeOutMs);
       }
     };
 
@@ -113,15 +104,9 @@ export default class NowPlayingView extends ItemView {
     pauseBtn.onclick = async () => {
       if (!file) return;
       if (isPaused) {
-        await this.plugin.engine.resumeByFile(
-          file,
-          this.plugin.settings.defaultFadeInMs,
-        );
+        await this.plugin.engine.resumeByFile(file, this.plugin.settings.defaultFadeInMs);
       } else {
-        await this.plugin.engine.pauseByFile(
-          file,
-          this.plugin.settings.defaultFadeOutMs,
-        );
+        await this.plugin.engine.pauseByFile(file, this.plugin.settings.defaultFadeOutMs);
       }
     };
 
@@ -133,14 +118,24 @@ export default class NowPlayingView extends ItemView {
     volSlider.max = "1";
     volSlider.step = "0.01";
 
-    const pref = this.plugin.getSoundPref(path);
-    volSlider.value = String(pref.volume ?? 1);
+    if (activePlaylistPath) {
+      const pref = this.plugin.getPlaylistPref(activePlaylistPath);
+      volSlider.value = String(pref.volume ?? 1);
 
-    this.plugin.registerVolumeSliderForPath(path, volSlider);
+      volSlider.oninput = () => {
+        const v = Number(volSlider.value);
+        this.plugin.setPlaylistVolumeFromSlider(activePlaylistPath, v);
+      };
+    } else {
+      const pref = this.plugin.getSoundPref(path);
+      volSlider.value = String(pref.volume ?? 1);
 
-    volSlider.oninput = () => {
-      const v = Number(volSlider.value);
-      this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
-    };
+      this.plugin.registerVolumeSliderForPath(path, volSlider);
+
+      volSlider.oninput = () => {
+        const v = Number(volSlider.value);
+        this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
+      };
+    }
   }
 }

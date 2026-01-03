@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
 import { PerSoundSettingsModal } from "./PerSoundSettingsModal";
 import { PlaylistSettingsModal } from "./PlaylistSettingsModal";
@@ -144,15 +144,9 @@ export default class SoundboardView extends ItemView {
     const rootFolder = library?.rootFolder;
     const rootRegex =
       rootFolder != null && rootFolder !== ""
-        ? new RegExp(
-            `^${rootFolder.replace(
-              /[.*+?^${}()|[\]\\]/g,
-              "\\$&",
-            )}/?`,
-          )
+        ? new RegExp(`^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`)
         : null;
-    const makeLabel = (f: string) =>
-      rootRegex ? f.replace(rootRegex, "") || f : f;
+    const makeLabel = (f: string) => (rootRegex ? f.replace(rootRegex, "") || f : f);
 
     const folderA = this.state.folderA ?? "";
     const folderB = this.state.folderB ?? "";
@@ -160,20 +154,13 @@ export default class SoundboardView extends ItemView {
     const folderD = this.state.folderD ?? "";
     const activeSlot: FolderSlot = this.state.activeSlot ?? "A";
 
-    const createFolderSelectTwo = (
-      parent: HTMLElement,
-      currentValue: string,
-      slot: "A" | "B",
-    ) => {
+    const createFolderSelectTwo = (parent: HTMLElement, currentValue: string, slot: "A" | "B") => {
       const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
       const select = wrap.createEl("select");
 
       select.createEl("option", { text: "All folders", value: "" });
       for (const f of topFolders) {
-        select.createEl("option", {
-          text: makeLabel(f),
-          value: f,
-        });
+        select.createEl("option", { text: makeLabel(f), value: f });
       }
       select.value = currentValue || "";
       if (activeSlot === slot) wrap.addClass("active");
@@ -223,10 +210,7 @@ export default class SoundboardView extends ItemView {
 
       select.createEl("option", { text: "All folders", value: "" });
       for (const f of topFolders) {
-        select.createEl("option", {
-          text: makeLabel(f),
-          value: f,
-        });
+        select.createEl("option", { text: makeLabel(f), value: f });
       }
       select.value = currentValue || "";
 
@@ -282,18 +266,11 @@ export default class SoundboardView extends ItemView {
       text: "Stop all",
     });
     stopAllBtn.onclick = () => {
-      void this.plugin.engine.stopAll(
-        this.plugin.settings.defaultFadeOutMs,
-      );
+      void this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
     };
 
-    const masterGroup = rowControls.createDiv({
-      cls: "ttrpg-sb-slider-group",
-    });
-    masterGroup.createSpan({
-      cls: "ttrpg-sb-slider-label",
-      text: "Master",
-    });
+    const masterGroup = rowControls.createDiv({ cls: "ttrpg-sb-slider-group" });
+    masterGroup.createSpan({ cls: "ttrpg-sb-slider-label", text: "Master" });
     const volInput = masterGroup.createEl("input", { type: "range" });
     volInput.min = "0";
     volInput.max = "1";
@@ -306,13 +283,8 @@ export default class SoundboardView extends ItemView {
       void this.plugin.saveSettings();
     };
 
-    const ambGroup = rowControls.createDiv({
-      cls: "ttrpg-sb-slider-group",
-    });
-    ambGroup.createSpan({
-      cls: "ttrpg-sb-slider-label",
-      text: "Ambience",
-    });
+    const ambGroup = rowControls.createDiv({ cls: "ttrpg-sb-slider-group" });
+    ambGroup.createSpan({ cls: "ttrpg-sb-slider-label", text: "Ambience" });
     const ambInput = ambGroup.createEl("input", { type: "range" });
     ambInput.min = "0";
     ambInput.max = "1";
@@ -383,9 +355,7 @@ export default class SoundboardView extends ItemView {
     });
     const thumb = this.findThumbFor(file);
     if (thumb) {
-      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
-        thumb,
-      )})`;
+      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(thumb)})`;
     }
 
     const pref = this.plugin.getSoundPref(file.path);
@@ -396,14 +366,12 @@ export default class SoundboardView extends ItemView {
         await this.plugin.engine.stopByFile(file, 0);
       }
       const baseVol = pref.volume ?? 1;
-      const effectiveVol =
-        baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
+      const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
 
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
-        loop: !!pref.loop,
-        fadeInMs:
-          pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        loop: this.plugin.getEffectiveLoopForPath(file.path),
+        fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
       });
     };
 
@@ -413,28 +381,28 @@ export default class SoundboardView extends ItemView {
       cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
       attr: {
         "aria-label": "Toggle loop",
-        "aria-pressed": String(!!pref.loop),
+        "aria-pressed": "false",
         type: "button",
       },
     });
     setIcon(loopBtn, "repeat");
+
     const paintLoop = () => {
-      loopBtn.toggleClass("active", !!pref.loop);
-      loopBtn.setAttr("aria-pressed", String(!!pref.loop));
+      const effective = this.plugin.getEffectiveLoopForPath(file.path);
+      loopBtn.toggleClass("active", effective);
+      loopBtn.setAttr("aria-pressed", String(effective));
     };
     paintLoop();
 
     loopBtn.onclick = async () => {
-      pref.loop = !pref.loop;
+      const effective = this.plugin.getEffectiveLoopForPath(file.path);
+      pref.loop = !effective;
       this.plugin.setSoundPref(file.path, pref);
       await this.plugin.saveSettings();
       paintLoop();
     };
 
-    const stopBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-stop",
-      text: "Stop",
-    });
+    const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.path = file.path;
     if (this.playingFiles.has(file.path)) stopBtn.classList.add("playing");
     stopBtn.onclick = async () => {
@@ -457,24 +425,13 @@ export default class SoundboardView extends ItemView {
 
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      this.plugin.setVolumeForPathFromSlider(
-        file.path,
-        v,
-        inlineVol,
-      );
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
 
-    const gearPerBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn push-right",
-    });
+    const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     setIcon(gearPerBtn, "gear");
     gearPerBtn.setAttr("aria-label", "Sound settings");
-    gearPerBtn.onclick = () =>
-      new PerSoundSettingsModal(
-        this.app,
-        this.plugin,
-        file.path,
-      ).open();
+    gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
   }
 
   // ===================== Singles (simple list view) =====================
@@ -484,14 +441,8 @@ export default class SoundboardView extends ItemView {
     row.dataset.path = file.path;
 
     const main = row.createDiv({ cls: "ttrpg-sb-simple-main" });
-    main.createSpan({
-      cls: "ttrpg-sb-simple-title",
-      text: file.basename,
-    });
-    const durationEl = main.createSpan({
-      cls: "ttrpg-sb-simple-duration",
-      text: "",
-    });
+    main.createSpan({ cls: "ttrpg-sb-simple-title", text: file.basename });
+    const durationEl = main.createSpan({ cls: "ttrpg-sb-simple-duration", text: "" });
 
     this.plugin.requestDurationFormatted(file, (txt) => {
       if (!durationEl.isConnected) return;
@@ -506,47 +457,43 @@ export default class SoundboardView extends ItemView {
         await this.plugin.engine.stopByFile(file, 0);
       }
       const baseVol = pref.volume ?? 1;
-      const effectiveVol =
-        baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
+      const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
 
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
-        loop: !!pref.loop,
-        fadeInMs:
-          pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        loop: this.plugin.getEffectiveLoopForPath(file.path),
+        fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
       });
     };
 
-    const controls = row.createDiv({
-      cls: "ttrpg-sb-simple-controls",
-    });
+    const controls = row.createDiv({ cls: "ttrpg-sb-simple-controls" });
 
     const loopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-icon-btn ttrpg-sb-loop",
       attr: {
         "aria-label": "Toggle loop",
-        "aria-pressed": String(!!pref.loop),
+        "aria-pressed": "false",
         type: "button",
       },
     });
     setIcon(loopBtn, "repeat");
+
     const paintLoop = () => {
-      loopBtn.toggleClass("active", !!pref.loop);
-      loopBtn.setAttr("aria-pressed", String(!!pref.loop));
+      const effective = this.plugin.getEffectiveLoopForPath(file.path);
+      loopBtn.toggleClass("active", effective);
+      loopBtn.setAttr("aria-pressed", String(effective));
     };
     paintLoop();
 
     loopBtn.onclick = async () => {
-      pref.loop = !pref.loop;
+      const effective = this.plugin.getEffectiveLoopForPath(file.path);
+      pref.loop = !effective;
       this.plugin.setSoundPref(file.path, pref);
       await this.plugin.saveSettings();
       paintLoop();
     };
 
-    const stopBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-stop",
-      text: "Stop",
-    });
+    const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.path = file.path;
     stopBtn.onclick = async () => {
       await this.plugin.engine.stopByFile(
@@ -568,24 +515,13 @@ export default class SoundboardView extends ItemView {
 
     inlineVol.oninput = () => {
       const v = Number(inlineVol.value);
-      this.plugin.setVolumeForPathFromSlider(
-        file.path,
-        v,
-        inlineVol,
-      );
+      this.plugin.setVolumeForPathFromSlider(file.path, v, inlineVol);
     };
 
-    const gearPerBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn push-right",
-    });
+    const gearPerBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     setIcon(gearPerBtn, "gear");
     gearPerBtn.setAttr("aria-label", "Sound settings");
-    gearPerBtn.onclick = () =>
-      new PerSoundSettingsModal(
-        this.app,
-        this.plugin,
-        file.path,
-      ).open();
+    gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
 
     // If this file was already playing when the row was rendered, highlight it
     if (this.playingFiles.has(file.path)) {
@@ -595,11 +531,20 @@ export default class SoundboardView extends ItemView {
   }
 
   private findThumbFor(file: TFile): TFile | null {
-    const parent = file.parent?.path ?? "";
     const base = file.basename;
-    const candidates = ["png", "jpg", "jpeg", "webp"].map(
-      (ext) => `${parent}/${base}.${ext}`,
-    );
+
+    if (this.plugin.settings.thumbnailFolderEnabled && this.plugin.settings.thumbnailFolderPath.trim()) {
+      const folder = normalizePath(this.plugin.settings.thumbnailFolderPath.trim());
+      const candidates = ["png", "jpg", "jpeg", "webp"].map((ext) => `${folder}/${base}.${ext}`);
+      for (const p of candidates) {
+        const af = this.app.vault.getAbstractFileByPath(p);
+        if (af && af instanceof TFile) return af;
+      }
+      return null;
+    }
+
+    const parent = file.parent?.path ?? "";
+    const candidates = ["png", "jpg", "jpeg", "webp"].map((ext) => `${parent}/${base}.${ext}`);
     for (const p of candidates) {
       const af = this.app.vault.getAbstractFileByPath(p);
       if (af && af instanceof TFile) return af;
@@ -610,9 +555,7 @@ export default class SoundboardView extends ItemView {
   // ===================== Playlists =====================
 
   private renderPlaylistCard(container: HTMLElement, pl: PlaylistInfo) {
-    const card = container.createDiv({
-      cls: "ttrpg-sb-card playlist",
-    });
+    const card = container.createDiv({ cls: "ttrpg-sb-card playlist" });
     card.createDiv({ cls: "ttrpg-sb-title", text: pl.name });
 
     const tile = card.createEl("button", {
@@ -620,9 +563,7 @@ export default class SoundboardView extends ItemView {
       attr: { "aria-label": pl.name },
     });
     if (pl.cover) {
-      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(
-        pl.cover,
-      )})`;
+      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(pl.cover)})`;
     }
 
     tile.onclick = () => {
@@ -631,111 +572,73 @@ export default class SoundboardView extends ItemView {
 
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
 
-    const prevBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-    });
+    const prevBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
       void this.plugin.prevInPlaylist(pl);
     };
 
-    const stopBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-stop",
-      text: "Stop",
-    });
+    const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
       void this.plugin.stopPlaylist(pl.path);
     };
 
-    const nextBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-    });
+    const nextBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
       void this.plugin.nextInPlaylist(pl);
     };
 
-    const gearBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn push-right",
-    });
+    const gearBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     setIcon(gearBtn, "gear");
     gearBtn.setAttr("aria-label", "Playlist settings");
-    gearBtn.onclick = () =>
-      new PlaylistSettingsModal(
-        this.app,
-        this.plugin,
-        pl.path,
-      ).open();
+    gearBtn.onclick = () => new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
 
     const isActive = this.plugin.isPlaylistActive(pl.path);
     if (isActive) stopBtn.classList.add("playing");
   }
 
   private renderPlaylistRow(container: HTMLElement, pl: PlaylistInfo) {
-    const row = container.createDiv({
-      cls: "ttrpg-sb-simple-row playlist",
-    });
+    const row = container.createDiv({ cls: "ttrpg-sb-simple-row playlist" });
     row.dataset.playlist = pl.path;
 
     const main = row.createDiv({ cls: "ttrpg-sb-simple-main" });
-    main.createSpan({
-      cls: "ttrpg-sb-simple-title",
-      text: pl.name,
-    });
-    main.createSpan({
-      cls: "ttrpg-sb-simple-duration",
-      text: `${pl.tracks.length} tracks`,
-    });
+    main.createSpan({ cls: "ttrpg-sb-simple-title", text: pl.name });
+    main.createSpan({ cls: "ttrpg-sb-simple-duration", text: `${pl.tracks.length} tracks` });
 
     main.onclick = () => {
       void this.plugin.startPlaylist(pl);
     };
 
-    const controls = row.createDiv({
-      cls: "ttrpg-sb-simple-controls",
-    });
+    const controls = row.createDiv({ cls: "ttrpg-sb-simple-controls" });
 
-    const prevBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-    });
+    const prevBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(prevBtn, "skip-back");
     prevBtn.setAttr("aria-label", "Previous track");
     prevBtn.onclick = () => {
       void this.plugin.prevInPlaylist(pl);
     };
 
-    const stopBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-stop",
-      text: "Stop",
-    });
+    const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.playlist = pl.path;
     stopBtn.onclick = () => {
       void this.plugin.stopPlaylist(pl.path);
     };
 
-    const nextBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn",
-    });
+    const nextBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn" });
     setIcon(nextBtn, "skip-forward");
     nextBtn.setAttr("aria-label", "Next track");
     nextBtn.onclick = () => {
       void this.plugin.nextInPlaylist(pl);
     };
 
-    const gearBtn = controls.createEl("button", {
-      cls: "ttrpg-sb-icon-btn push-right",
-    });
+    const gearBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
     setIcon(gearBtn, "gear");
     gearBtn.setAttr("aria-label", "Playlist settings");
-    gearBtn.onclick = () =>
-      new PlaylistSettingsModal(
-        this.app,
-        this.plugin,
-        pl.path,
-      ).open();
+    gearBtn.onclick = () => new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
 
     const isActive = this.plugin.isPlaylistActive(pl.path);
     if (isActive) {
@@ -746,10 +649,7 @@ export default class SoundboardView extends ItemView {
 
   private updatePlayingVisuals() {
     // Singles – stop buttons
-    const btns =
-      this.contentEl.querySelectorAll<HTMLButtonElement>(
-        ".ttrpg-sb-stop[data-path]",
-      );
+    const btns = this.contentEl.querySelectorAll<HTMLButtonElement>(".ttrpg-sb-stop[data-path]");
     btns.forEach((b) => {
       const p = b.dataset.path || "";
       if (this.playingFiles.has(p)) b.classList.add("playing");
@@ -757,20 +657,14 @@ export default class SoundboardView extends ItemView {
     });
 
     // Singles – rows in simple view
-    const rows =
-      this.contentEl.querySelectorAll<HTMLElement>(
-        ".ttrpg-sb-simple-row[data-path]",
-      );
+    const rows = this.contentEl.querySelectorAll<HTMLElement>(".ttrpg-sb-simple-row[data-path]");
     rows.forEach((r) => {
       const p = r.dataset.path || "";
       r.toggleClass("playing", this.playingFiles.has(p));
     });
 
     // Playlists – stop buttons
-    const pbtns =
-      this.contentEl.querySelectorAll<HTMLButtonElement>(
-        ".ttrpg-sb-stop[data-playlist]",
-      );
+    const pbtns = this.contentEl.querySelectorAll<HTMLButtonElement>(".ttrpg-sb-stop[data-playlist]");
     pbtns.forEach((b) => {
       const p = b.dataset.playlist || "";
       const active = this.plugin.isPlaylistActive(p);
@@ -778,10 +672,7 @@ export default class SoundboardView extends ItemView {
     });
 
     // Playlists – rows in simple view
-    const plRows =
-      this.contentEl.querySelectorAll<HTMLElement>(
-        ".ttrpg-sb-simple-row[data-playlist]",
-      );
+    const plRows = this.contentEl.querySelectorAll<HTMLElement>(".ttrpg-sb-simple-row[data-playlist]");
     plRows.forEach((r) => {
       const p = r.dataset.playlist || "";
       const active = this.plugin.isPlaylistActive(p);

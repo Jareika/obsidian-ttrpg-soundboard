@@ -18,13 +18,12 @@ export class PlaylistSettingsModal extends Modal {
 
     const pref = this.plugin.getPlaylistPref(this.folderPath);
 
-    let fadeInStr =
-      typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
-    let fadeOutStr =
-      typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
+    let fadeInStr = typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
+    let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
     let vol = typeof pref.volume === "number" ? pref.volume : 1;
     const originalVol = vol; // for restoring on Cancel
     let loop = !!pref.loop;
+    let shuffle = !!pref.shuffle;
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -64,80 +63,75 @@ export class PlaylistSettingsModal extends Modal {
           }),
       );
 
+    new Setting(contentEl).setName("Loop playlist").addToggle((tg) =>
+      tg.setValue(loop).onChange((v) => {
+        loop = v;
+      }),
+    );
+
     new Setting(contentEl)
-      .setName("Loop playlist")
+      .setName("Shuffle")
+      .setDesc("If enabled, playback order is shuffled. On each loop restart, it is reshuffled.")
       .addToggle((tg) =>
-        tg.setValue(loop).onChange((v) => {
-          loop = v;
+        tg.setValue(shuffle).onChange((v) => {
+          shuffle = v;
         }),
       );
 
     new Setting(contentEl)
       .setName("Insert playlist button")
-      .setDesc(
-        "Insert a Markdown button for this playlist into the active note.",
-      )
+      .setDesc("Insert a Markdown button for this playlist into the active note.")
       .addButton((b) =>
-        b
-          .setButtonText("Insert button")
-          .onClick(() => {
-            this.plugin.insertPlaylistButtonIntoActiveNote(
-              this.folderPath,
-            );
-          }),
+        b.setButtonText("Insert button").onClick(() => {
+          this.plugin.insertPlaylistButtonIntoActiveNote(this.folderPath);
+        }),
       );
 
     new Setting(contentEl)
       .addButton((b) =>
-        b
-          .setButtonText("Restore defaults")
-          .onClick(async () => {
-            delete pref.fadeInMs;
-            delete pref.fadeOutMs;
-            delete pref.volume;
-            delete pref.loop;
+        b.setButtonText("Restore defaults").onClick(async () => {
+          delete pref.fadeInMs;
+          delete pref.fadeOutMs;
+          delete pref.volume;
+          delete pref.loop;
+          delete pref.shuffle;
 
-            this.plugin.setPlaylistPref(this.folderPath, pref);
-            await this.plugin.saveSettings();
-            this.plugin.refreshViews();
+          this.plugin.setPlaylistPref(this.folderPath, pref);
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
 
-            // Reset volume of all currently playing tracks in this playlist back to 1
-            this.plugin.updateVolumeForPlaylistFolder(this.folderPath, 1);
+          // Reset volume of all currently playing tracks in this playlist back to 1
+          this.plugin.updateVolumeForPlaylistFolder(this.folderPath, 1);
 
-            this.close();
-          }),
+          this.close();
+        }),
       )
       .addButton((b) =>
-        b
-          .setCta()
-          .setButtonText("Save")
-          .onClick(async () => {
-            const fi =
-              fadeInStr.trim() === "" ? undefined : Number(fadeInStr);
-            const fo =
-              fadeOutStr.trim() === "" ? undefined : Number(fadeOutStr);
+        b.setCta().setButtonText("Save").onClick(async () => {
+          const fi = fadeInStr.trim() === "" ? undefined : Number(fadeInStr);
+          const fo = fadeOutStr.trim() === "" ? undefined : Number(fadeOutStr);
 
-            if (fi != null && Number.isNaN(fi)) return;
-            if (fo != null && Number.isNaN(fo)) return;
+          if (fi != null && Number.isNaN(fi)) return;
+          if (fo != null && Number.isNaN(fo)) return;
 
-            pref.fadeInMs = fi;
-            pref.fadeOutMs = fo;
-            pref.volume = vol;
-            pref.loop = loop;
+          pref.fadeInMs = fi;
+          pref.fadeOutMs = fo;
+          pref.volume = vol;
+          pref.loop = loop;
 
-            this.plugin.setPlaylistPref(this.folderPath, pref);
-            await this.plugin.saveSettings();
-            this.plugin.refreshViews();
-            this.close();
-          }),
+          if (shuffle) pref.shuffle = true;
+          else delete pref.shuffle;
+
+          this.plugin.setPlaylistPref(this.folderPath, pref);
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+          this.close();
+        }),
       )
       .addButton((b) =>
         b.setButtonText("Cancel").onClick(() => {
           // Restore the original live playlist volume
-          this.plugin.updateVolumeForPlaylistFolder(
-            this.folderPath,
-            originalVol,
-          );
+          this.plugin.updateVolumeForPlaylistFolder(this.folderPath, originalVol);
           this.close();
         }),
       );

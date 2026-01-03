@@ -35,18 +35,31 @@ export type PlaybackEvent =
 
 type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
 
-interface PlaybackRecord {
+interface PlaybackRecordBase {
   id: string;
-  source: AudioBufferSourceNode | null;
   gain: GainNode;
   file: TFile;
-  buffer: AudioBuffer;
   loop: boolean;
   state: "playing" | "paused";
+  lastVolume: number; // last non-zero volume used for fades / resume
+}
+
+interface BufferPlaybackRecord extends PlaybackRecordBase {
+  kind: "buffer";
+  source: AudioBufferSourceNode | null;
+  buffer: AudioBuffer;
   startTime: number; // AudioContext time when the current segment started
   offset: number; // seconds already played before startTime (for resume)
-  lastVolume: number; // last non-zero volume used for fades
 }
+
+interface MediaPlaybackRecord extends PlaybackRecordBase {
+  kind: "media";
+  element: HTMLAudioElement;
+  node: MediaElementAudioSourceNode;
+  endedHandler: (() => void) | null;
+}
+
+type PlaybackRecord = BufferPlaybackRecord | MediaPlaybackRecord;
 
 export type PathPlaybackState = "none" | "playing" | "paused" | "mixed";
 
@@ -60,7 +73,8 @@ export class AudioEngine {
   private bufferUsage = new Map<string, number>(); // path -> approximate bytes
   private totalBufferedBytes = 0;
   private maxCachedBytes = 512 * 1024 * 1024; // default 512 MB
-
+  
+  private mediaElementThresholdBytes = 25 * 1024 * 1024;
   private playing = new Map<string, PlaybackRecord>();
   private masterVolume = 1;
   private listeners = new Set<(e: PlaybackEvent) => void>();
@@ -122,6 +136,15 @@ export class AudioEngine {
     this.bufferUsage.clear();
     this.totalBufferedBytes = 0;
   }
+  
+  /**
+   * Configure at which file size (in MB) playback switches to HTMLAudioElement (MediaElement).
+   * 0 disables MediaElement playback completely (always decode to AudioBuffer).
+   */
+  setMediaElementThresholdMB(mb: number) {
+    const clamped = Math.max(0, Number.isFinite(mb) ? mb : 0);
+    this.mediaElementThresholdBytes = Math.round(clamped * 1024 * 1024);
+  }
 
   // ===== Audio context / buffer loading =====
 
@@ -144,6 +167,12 @@ export class AudioEngine {
         // Some browsers may refuse to resume the context; ignore.
       }
     }
+  }
+
+  private isLargeFile(file: TFile): boolean {
+    if (this.mediaElementThresholdBytes <= 0) return false;
+    const size = file.stat?.size ?? 0;
+    return size > this.mediaElementThresholdBytes;
   }
 
   async loadBuffer(file: TFile): Promise<AudioBuffer> {
@@ -186,10 +215,22 @@ export class AudioEngine {
   // ===== Playback control =====
 
   async play(file: TFile, opts: PlayOptions = {}) {
+    if (this.isLargeFile(file)) {
+      try {
+        return await this.playWithMediaElement(file, opts);
+      } catch {
+        // Fallback to buffer playback (for rare cases where a format cannot be played via <audio>)
+        return await this.playWithBuffer(file, opts);
+      }
+    }
+    return await this.playWithBuffer(file, opts);
+  }
+
+  private async playWithBuffer(file: TFile, opts: PlayOptions = {}) {
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
     const ctx = this.ctx!;
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = this.createId();
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -213,7 +254,8 @@ export class AudioEngine {
       gain.gain.setValueAtTime(targetVol, now);
     }
 
-    const rec: PlaybackRecord = {
+    const rec: BufferPlaybackRecord = {
+      kind: "buffer",
       id,
       source,
       gain,
@@ -230,7 +272,6 @@ export class AudioEngine {
     source.onended = () => {
       const existing = this.playing.get(id);
       if (!existing) return;
-      // Ignore onended if the record was paused (we stopped it manually)
       if (existing.state !== "playing") return;
 
       this.playing.delete(id);
@@ -243,6 +284,76 @@ export class AudioEngine {
     };
 
     source.start();
+
+    this.emit({ type: "start", filePath: file.path, id });
+
+    return {
+      id,
+      stop: (sOpts?: StopOptions) => this.stopById(id, sOpts),
+    };
+  }
+
+  private async playWithMediaElement(file: TFile, opts: PlayOptions = {}) {
+    await this.ensureContext();
+    const ctx = this.ctx!;
+    const id = this.createId();
+
+    const element = document.createElement("audio");
+    element.preload = "auto";
+    element.src = this.app.vault.getResourcePath(file);
+    element.loop = !!opts.loop;
+
+    const node = ctx.createMediaElementSource(element);
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+
+    node.connect(gain);
+    gain.connect(this.masterGain!);
+
+    const now = ctx.currentTime;
+    const targetVol = Math.max(0, Math.min(1, opts.volume ?? 1));
+    const fadeIn = (opts.fadeInMs ?? 0) / 1000;
+
+    if (fadeIn > 0) {
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(targetVol, now + fadeIn);
+    } else {
+      gain.gain.setValueAtTime(targetVol, now);
+    }
+
+    const rec: MediaPlaybackRecord = {
+      kind: "media",
+      id,
+      element,
+      node,
+      gain,
+      file,
+      loop: !!opts.loop,
+      state: "playing",
+      lastVolume: targetVol,
+      endedHandler: null,
+    };
+    this.playing.set(id, rec);
+
+    const endedHandler = () => {
+      const existing = this.playing.get(id);
+      if (!existing) return;
+      if (existing.state !== "playing") return;
+
+      this.playing.delete(id);
+      this.cleanupMediaRecord(rec);
+
+      this.emit({
+        type: "stop",
+        filePath: file.path,
+        id,
+        reason: "ended",
+      });
+    };
+    rec.endedHandler = endedHandler;
+    element.addEventListener("ended", endedHandler);
+
+    await element.play();
 
     this.emit({ type: "start", filePath: file.path, id });
 
@@ -268,6 +379,9 @@ export class AudioEngine {
 
   async preload(files: TFile[]) {
     for (const f of files) {
+      // Large files are streamed via <audio>, so decoding them here would defeat the purpose.
+      if (this.isLargeFile(f)) continue;
+
       try {
         await this.loadBuffer(f);
       } catch (err) {
@@ -294,7 +408,7 @@ export class AudioEngine {
       targets.map(
         (rec) =>
           new Promise<void>((resolve) => {
-            if (!ctx || !rec.source) {
+            if (!ctx) {
               this.pauseRecord(rec);
               this.emit({
                 type: "pause",
@@ -308,8 +422,8 @@ export class AudioEngine {
             if (fadeSec > 0) {
               const n = ctx.currentTime;
               const cur = rec.gain.gain.value;
-              // Remember the last audible volume for resume fade-in
               rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
+
               rec.gain.gain.cancelScheduledValues(n);
               rec.gain.gain.setValueAtTime(cur, n);
               rec.gain.gain.linearRampToValueAtTime(0, n + fadeSec);
@@ -443,6 +557,10 @@ export class AudioEngine {
 
   // ===== Internal helpers =====
 
+  private createId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   private stopById(id: string, sOpts?: StopOptions): Promise<void> {
     const rec = this.playing.get(id);
     if (!rec) return Promise.resolve();
@@ -450,13 +568,12 @@ export class AudioEngine {
     this.playing.delete(id);
 
     const ctx = this.ctx;
-    const fadeOut = (sOpts?.fadeOutMs ?? 0) / 1000;
+    const fadeOutMs = sOpts?.fadeOutMs ?? 0;
+    const fadeOut = fadeOutMs / 1000;
     const filePath = rec.file.path;
-    const source = rec.source;
-    const gain = rec.gain;
 
-    if (!ctx || !source) {
-      // Already paused or no live node – emit stop immediately
+    if (!ctx) {
+      this.cleanupRecord(rec);
       this.emit({
         type: "stop",
         filePath,
@@ -470,17 +587,13 @@ export class AudioEngine {
       const n = ctx.currentTime;
 
       if (fadeOut > 0) {
-        gain.gain.cancelScheduledValues(n);
-        const cur = gain.gain.value;
-        gain.gain.setValueAtTime(cur, n);
-        gain.gain.linearRampToValueAtTime(0, n + fadeOut);
+        rec.gain.gain.cancelScheduledValues(n);
+        const cur = rec.gain.gain.value;
+        rec.gain.gain.setValueAtTime(cur, n);
+        rec.gain.gain.linearRampToValueAtTime(0, n + fadeOut);
 
         window.setTimeout(() => {
-          try {
-            source.stop();
-          } catch {
-            // Ignore errors when stopping an already-stopped source
-          }
+          this.cleanupRecord(rec);
           this.emit({
             type: "stop",
             filePath,
@@ -488,13 +601,9 @@ export class AudioEngine {
             reason: "stopped",
           });
           resolve();
-        }, Math.max(1, sOpts?.fadeOutMs ?? 0));
+        }, Math.max(1, fadeOutMs));
       } else {
-        try {
-          source.stop();
-        } catch {
-          // Ignore errors when stopping an already-stopped source
-        }
+        this.cleanupRecord(rec);
         this.emit({
           type: "stop",
           filePath,
@@ -506,66 +615,143 @@ export class AudioEngine {
     });
   }
 
-  private pauseRecord(rec: PlaybackRecord) {
-    if (!this.ctx) return;
-    if (rec.state !== "playing" || !rec.source) return;
+  private cleanupRecord(rec: PlaybackRecord) {
+    if (rec.kind === "buffer") {
+      try {
+        rec.source?.stop();
+      } catch {
+        // Ignore errors when stopping an already-stopped source
+      }
+      rec.source = null;
+      return;
+    }
 
-    const ctx = this.ctx;
-    const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
-    const newOffset = rec.offset + elapsed;
+    if (rec.kind === "media") {
+      this.cleanupMediaRecord(rec);
+    }
+  }
 
-    rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
-    rec.state = "paused";
+  private cleanupMediaRecord(rec: MediaPlaybackRecord) {
+    try {
+      if (rec.endedHandler) {
+        rec.element.removeEventListener("ended", rec.endedHandler);
+      }
+    } catch {
+      // ignore
+    }
+    rec.endedHandler = null;
 
     try {
-      rec.source.stop();
+      rec.element.pause();
     } catch {
-      // Ignore errors if already stopped
+      // ignore
     }
-    rec.source = null;
+
+    try {
+      rec.node.disconnect();
+    } catch {
+      // ignore
+    }
+
+    try {
+      rec.gain.disconnect();
+    } catch {
+      // ignore
+    }
+
+    try {
+      rec.element.removeAttribute("src");
+      rec.element.load();
+    } catch {
+      // ignore
+    }
+  }
+
+  private pauseRecord(rec: PlaybackRecord) {
+    if (!this.ctx) return;
+    if (rec.state !== "playing") return;
+
+    if (rec.kind === "buffer") {
+      if (!rec.source) return;
+
+      const ctx = this.ctx;
+      const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
+      const newOffset = rec.offset + elapsed;
+
+      rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
+      rec.state = "paused";
+
+      try {
+        rec.source.stop();
+      } catch {
+        // Ignore errors if already stopped
+      }
+      rec.source = null;
+      return;
+    }
+
+    if (rec.kind === "media") {
+      try {
+        rec.element.pause();
+      } catch {
+        // ignore
+      }
+      rec.state = "paused";
+    }
   }
 
   private resumeRecord(rec: PlaybackRecord) {
     if (!this.ctx) return;
     if (rec.state !== "paused") return;
 
-    const ctx = this.ctx;
-    const buffer = rec.buffer;
+    if (rec.kind === "buffer") {
+      const ctx = this.ctx;
+      const buffer = rec.buffer;
+      if (!buffer) return;
 
-    if (!buffer) return;
+      // Clamp offset near the end of the buffer
+      const maxOffset = Math.max(0, buffer.duration - 0.001);
+      const offset = Math.max(0, Math.min(rec.offset, maxOffset));
 
-    // Clamp offset near the end of the buffer
-    const maxOffset = Math.max(0, buffer.duration - 0.001);
-    const offset = Math.max(0, Math.min(rec.offset, maxOffset));
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = rec.loop;
 
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = rec.loop;
+      const gain = rec.gain;
+      source.connect(gain);
 
-    const gain = rec.gain;
-    source.connect(gain);
+      const id = rec.id;
 
-    const id = rec.id;
+      source.onended = () => {
+        const existing = this.playing.get(id);
+        if (!existing) return;
+        if (existing.state !== "playing") return;
 
-    source.onended = () => {
-      const existing = this.playing.get(id);
-      if (!existing) return;
-      if (existing.state !== "playing") return;
+        this.playing.delete(id);
+        this.emit({
+          type: "stop",
+          filePath: existing.file.path,
+          id,
+          reason: "ended",
+        });
+      };
 
-      this.playing.delete(id);
-      this.emit({
-        type: "stop",
-        filePath: existing.file.path,
-        id,
-        reason: "ended",
-      });
-    };
+      rec.source = source;
+      rec.state = "playing";
+      rec.startTime = ctx.currentTime;
 
-    rec.source = source;
-    rec.state = "playing";
-    rec.startTime = ctx.currentTime;
+      source.start(0, offset);
+      return;
+    }
 
-    source.start(0, offset);
+    if (rec.kind === "media") {
+      rec.state = "playing";
+      try {
+        void rec.element.play();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private touchBufferKey(key: string) {
