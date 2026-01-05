@@ -102,3 +102,13 @@ Soundbar/                       (Root folder)
       cover.png                 (Optional playlist cover)
       Track 01.ogg
       Track 02.ogg
+```
+
+# F.A.Q
+-  why do I need to set a threshold for large audio files.
+ - HTMLAudio is not as precise as AudioBuffer/WebAudio. AudioBuffer uses uncompressed PCM, which requires more RAM, but it allows seamless looping and can play multiple sounds simultaneously with high quality. HTMLAudio does not buffer in the same way, and for long tracks it is often better because it starts faster.
+  - What is then Decoded audio cache?
+   - The decoded audio cache is that amount of cache you hold up for the AudioBuffer. For thooses ambiences you like to have seamless loop or when you want play multiple sounds at once that aren't played with HTMLAudio. They are stored in RAM and if you would play many sounds in one session they could use quite much of it, so you can decide how much RAM you can spare for faster and better audio access. Only useful for looping and multiple sounds.
+
+## License
+MIT
