@@ -11,6 +11,7 @@ interface SoundPrefs {
   volume?: number;
   fadeInMs?: number;
   fadeOutMs?: number;
+  crossfadeMs?: number;
 }
 
 interface PlaylistPrefs {
@@ -293,6 +294,42 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     const iconSize = Math.max(12, Math.min(200, Number(this.settings.noteIconSizePx ?? 40)));
     document.documentElement.style.setProperty("--ttrpg-note-icon-size", `${iconSize}px`);
+
+    const setOrRemove = (name: string, value: string | undefined) => {
+      const v = (value ?? "").trim();
+      if (!v) document.documentElement.style.removeProperty(name);
+      else document.documentElement.style.setProperty(name, v);
+    };
+
+    const st = this.settings.style;
+    setOrRemove("--ttrpg-sb-card-bg-sounds", st.sounds.cardBg);
+    setOrRemove("--ttrpg-sb-card-border-sounds", st.sounds.cardBorder);
+    setOrRemove("--ttrpg-sb-tile-border-sounds", st.sounds.tileBorder);
+    setOrRemove("--ttrpg-sb-btn-bg-sounds", st.sounds.buttonBg);
+    setOrRemove("--ttrpg-sb-btn-border-sounds", st.sounds.buttonBorder);
+    setOrRemove("--ttrpg-sb-btn-color-sounds", st.sounds.buttonColor);
+
+    setOrRemove("--ttrpg-sb-card-bg-ambience", st.ambience.cardBg);
+    setOrRemove("--ttrpg-sb-card-border-ambience", st.ambience.cardBorder);
+    setOrRemove("--ttrpg-sb-tile-border-ambience", st.ambience.tileBorder);
+    setOrRemove("--ttrpg-sb-btn-bg-ambience", st.ambience.buttonBg);
+    setOrRemove("--ttrpg-sb-btn-border-ambience", st.ambience.buttonBorder);
+    setOrRemove("--ttrpg-sb-btn-color-ambience", st.ambience.buttonColor);
+
+    setOrRemove("--ttrpg-sb-card-bg-playlists", st.playlists.cardBg);
+    setOrRemove("--ttrpg-sb-card-border-playlists", st.playlists.cardBorder);
+    setOrRemove("--ttrpg-sb-tile-border-playlists", st.playlists.tileBorder);
+    setOrRemove("--ttrpg-sb-btn-bg-playlists", st.playlists.buttonBg);
+    setOrRemove("--ttrpg-sb-btn-border-playlists", st.playlists.buttonBorder);
+    setOrRemove("--ttrpg-sb-btn-color-playlists", st.playlists.buttonColor);
+  }
+
+  getLoopEndTrimSecondsForPath(path: string): number {
+    if (!this.isAmbiencePath(path)) return 0;
+    const pref = this.getSoundPref(path);
+    const ms = pref.crossfadeMs;
+    if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return 0;
+    return ms / 1000;
   }
 
   // ===== View activation / library wiring =====
@@ -759,6 +796,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const baseVol = pref.volume ?? 1;
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
     const fadeInMs = pref.fadeInMs != null ? pref.fadeInMs : this.settings.defaultFadeInMs;
+    const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
 
     if (!this.settings.allowOverlap) {
       await this.engine.stopByFile(file, 0);
@@ -768,6 +806,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       volume: effective,
       loop: this.getEffectiveLoopForPath(path),
       fadeInMs,
+	  loopEndTrimSeconds,
     });
   }
 
@@ -1360,6 +1399,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const isAmb = this.isAmbiencePath(path);
     const baseVol = pref.volume ?? 1;
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
+	const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
 
     const playing = new Set(this.engine.getPlayingFilePaths());
 
@@ -1373,6 +1413,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
         fadeInMs: pref.fadeInMs ?? this.settings.defaultFadeInMs,
+		loopEndTrimSeconds,
       });
     }
 

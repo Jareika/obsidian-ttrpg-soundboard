@@ -14,7 +14,6 @@ interface ViewState {
   folderC?: string;
   folderD?: string;
   activeSlot?: FolderSlot;
-  // Legacy field from very old versions that only stored a single "folder"
   folder?: string;
 }
 
@@ -45,17 +44,14 @@ export default class SoundboardView extends ItemView {
   onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
 
-    // Initial sync: mark all files that are already playing
     this.playingFiles = new Set(this.plugin.engine.getPlayingFilePaths());
 
-    // Subscribe to engine events to keep the view in sync
     this.unsubEngine = this.plugin.engine.on((e) => {
       if (e.type === "start") {
         this.playingFiles.add(e.filePath);
       } else if (e.type === "stop") {
         this.playingFiles.delete(e.filePath);
       }
-      // Pause/resume keep the file in the set, but still require visual refresh
       this.updatePlayingVisuals();
     });
 
@@ -75,7 +71,6 @@ export default class SoundboardView extends ItemView {
       folderC: this.state.folderC,
       folderD: this.state.folderD,
       activeSlot: this.state.activeSlot ?? "A",
-      // legacy "folder" is no longer saved
     };
   }
 
@@ -89,7 +84,6 @@ export default class SoundboardView extends ItemView {
       folder: state.folder,
     };
 
-    // Migration from very old ViewState that only had "folder"
     const legacyFolder = state.folder;
     if (!next.folderA && !next.folderB && legacyFolder) {
       next.folderA = legacyFolder;
@@ -130,14 +124,12 @@ export default class SoundboardView extends ItemView {
 
     const toolbar = contentEl.createDiv({ cls: "ttrpg-sb-toolbar" });
 
-    // Folder selectors (one or two rows)
     const rowFolders1 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
     let rowFolders2: HTMLElement | null = null;
     if (this.plugin.settings.toolbarFourFolders) {
       rowFolders2 = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
     }
 
-    // Last row: Stop all + master + ambience
     const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
 
     const topFolders = library?.topFolders ?? [];
@@ -176,12 +168,7 @@ export default class SoundboardView extends ItemView {
       return select;
     };
 
-    const createFolderSlotFour = (
-      parent: HTMLElement,
-      currentValue: string,
-      slot: FolderSlot,
-      goLeft: boolean,
-    ) => {
+    const createFolderSlotFour = (parent: HTMLElement, currentValue: string, slot: FolderSlot, goLeft: boolean) => {
       const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
       if (activeSlot === slot) wrap.addClass("active");
 
@@ -189,18 +176,14 @@ export default class SoundboardView extends ItemView {
       let goBtn: HTMLButtonElement;
 
       if (goLeft) {
-        // [Go][Select]
         goBtn = wrap.createEl("button", {
           cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
           attr: { type: "button", "aria-label": "Show this folder" },
         });
         goBtn.textContent = "Go";
-
         select = wrap.createEl("select");
       } else {
-        // [Select][Go]
         select = wrap.createEl("select");
-
         goBtn = wrap.createEl("button", {
           cls: "ttrpg-sb-icon-btn ttrpg-sb-folder-go",
           attr: { type: "button", "aria-label": "Show this folder" },
@@ -221,7 +204,6 @@ export default class SoundboardView extends ItemView {
         else if (slot === "C") this.state.folderC = v;
         else this.state.folderD = v;
         await this.saveViewState();
-        // activeSlot is NOT changed here; user uses the button to jump.
       };
 
       goBtn.onclick = async () => {
@@ -232,7 +214,6 @@ export default class SoundboardView extends ItemView {
     };
 
     if (this.plugin.settings.toolbarFourFolders) {
-      // 4 slots in two rows: A,B on top – C,D below
       createFolderSlotFour(rowFolders1, folderA, "A", false);
       createFolderSlotFour(rowFolders1, folderB, "B", true);
       if (rowFolders2) {
@@ -240,7 +221,6 @@ export default class SoundboardView extends ItemView {
         createFolderSlotFour(rowFolders2, folderD, "D", true);
       }
     } else {
-      // Classic 2-slot toolbar with switch button
       createFolderSelectTwo(rowFolders1, folderA, "A");
 
       const switchBtn = rowFolders1.createEl("button", {
@@ -258,8 +238,6 @@ export default class SoundboardView extends ItemView {
 
       createFolderSelectTwo(rowFolders1, folderB, "B");
     }
-
-    // ----- Controls row: Stop all + master + ambience -----
 
     const stopAllBtn = rowControls.createEl("button", {
       cls: "ttrpg-sb-stop-all",
@@ -297,8 +275,6 @@ export default class SoundboardView extends ItemView {
       void this.plugin.saveSettings();
     };
 
-    // ----- Main content: simple list vs. grid --------------------------
-
     const activeFolder = this.getActiveFolderPath();
     const useSimple = this.plugin.isSimpleViewForFolder(activeFolder);
 
@@ -313,7 +289,6 @@ export default class SoundboardView extends ItemView {
 
     const folder = activeFolder;
     if (!folder) {
-      // "All folders": show only singles from all folders (no playlists)
       for (const file of library.allSingles) {
         if (useSimple) this.renderSingleRow(container, file);
         else this.renderSingleCard(container, file);
@@ -328,38 +303,82 @@ export default class SoundboardView extends ItemView {
       return;
     }
 
-    // 1) Singles in the selected top-level folder (including Ambience subfolders)
-    for (const file of content.files) {
-      if (useSimple) this.renderSingleRow(container, file);
-      else this.renderSingleCard(container, file);
-    }
+    const renderGroup = (kind: "sounds" | "ambience" | "playlists") => {
+      if (kind === "playlists") {
+        for (const pl of content.playlists) {
+          if (useSimple) this.renderPlaylistRow(container, pl);
+          else this.renderPlaylistCard(container, pl);
+        }
+        return;
+      }
 
-    // 2) Playlists (child subfolders except Ambience)
-    for (const pl of content.playlists) {
-      if (useSimple) this.renderPlaylistRow(container, pl);
-      else this.renderPlaylistCard(container, pl);
+      const isAmb = kind === "ambience";
+      const files = content.files.filter((f) => this.plugin.isAmbiencePath(f.path) === isAmb);
+      for (const file of files) {
+        if (useSimple) this.renderSingleRow(container, file);
+        else this.renderSingleCard(container, file);
+      }
+    };
+
+    if (!this.plugin.settings.arrangementEnabled) {
+      for (const file of content.files) {
+        if (useSimple) this.renderSingleRow(container, file);
+        else this.renderSingleCard(container, file);
+      }
+      for (const pl of content.playlists) {
+        if (useSimple) this.renderPlaylistRow(container, pl);
+        else this.renderPlaylistCard(container, pl);
+      }
+    } else {
+      const order = this.getArrangementOrder();
+      for (const k of order) renderGroup(k);
     }
 
     this.updatePlayingVisuals();
   }
 
-  // ===================== Singles (grid view) =====================
+  private getArrangementOrder(): Array<"sounds" | "ambience" | "playlists"> {
+    const fallback: Array<"sounds" | "ambience" | "playlists"> = ["sounds", "ambience", "playlists"];
+    const chosen = [
+      this.plugin.settings.arrangementFirst,
+      this.plugin.settings.arrangementSecond,
+      this.plugin.settings.arrangementThird,
+    ].filter((v): v is "sounds" | "ambience" | "playlists" => v !== "default");
+
+    const seen = new Set<string>();
+    const out: Array<"sounds" | "ambience" | "playlists"> = [];
+    for (const v of chosen) {
+      if (seen.has(v)) continue;
+      seen.add(v);
+      out.push(v);
+    }
+    for (const v of fallback) {
+      if (!seen.has(v)) out.push(v);
+    }
+    return out;
+  }
 
   private renderSingleCard(container: HTMLElement, file: TFile) {
     const card = container.createDiv({ cls: "ttrpg-sb-card" });
+
+    const isAmbience = this.plugin.isAmbiencePath(file.path);
+    if (isAmbience) card.addClass("ambience");
+
     card.createDiv({ cls: "ttrpg-sb-title", text: file.basename });
 
     const tile = card.createEl("button", {
       cls: "ttrpg-sb-tile",
       attr: { "aria-label": file.basename },
     });
+    if (isAmbience) tile.addClass("ambience");
+
     const thumb = this.findThumbFor(file);
     if (thumb) {
       tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(thumb)})`;
     }
 
     const pref = this.plugin.getSoundPref(file.path);
-    const isAmbience = this.plugin.isAmbiencePath(file.path);
+    const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
 
     tile.onclick = async () => {
       if (!this.plugin.settings.allowOverlap) {
@@ -372,6 +391,7 @@ export default class SoundboardView extends ItemView {
         volume: effectiveVol,
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        loopEndTrimSeconds,
       });
     };
 
@@ -406,10 +426,7 @@ export default class SoundboardView extends ItemView {
     stopBtn.dataset.path = file.path;
     if (this.playingFiles.has(file.path)) stopBtn.classList.add("playing");
     stopBtn.onclick = async () => {
-      await this.plugin.engine.stopByFile(
-        file,
-        pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs,
-      );
+      await this.plugin.engine.stopByFile(file, pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs);
     };
 
     const inlineVol = controls.createEl("input", {
@@ -434,11 +451,12 @@ export default class SoundboardView extends ItemView {
     gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
   }
 
-  // ===================== Singles (simple list view) =====================
-
   private renderSingleRow(container: HTMLElement, file: TFile) {
     const row = container.createDiv({ cls: "ttrpg-sb-simple-row" });
     row.dataset.path = file.path;
+
+    const isAmbience = this.plugin.isAmbiencePath(file.path);
+    if (isAmbience) row.addClass("ambience");
 
     const main = row.createDiv({ cls: "ttrpg-sb-simple-main" });
     main.createSpan({ cls: "ttrpg-sb-simple-title", text: file.basename });
@@ -450,7 +468,7 @@ export default class SoundboardView extends ItemView {
     });
 
     const pref = this.plugin.getSoundPref(file.path);
-    const isAmbience = this.plugin.isAmbiencePath(file.path);
+    const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
 
     main.onclick = async () => {
       if (!this.plugin.settings.allowOverlap) {
@@ -463,6 +481,7 @@ export default class SoundboardView extends ItemView {
         volume: effectiveVol,
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
+        loopEndTrimSeconds,
       });
     };
 
@@ -496,10 +515,7 @@ export default class SoundboardView extends ItemView {
     const stopBtn = controls.createEl("button", { cls: "ttrpg-sb-stop", text: "Stop" });
     stopBtn.dataset.path = file.path;
     stopBtn.onclick = async () => {
-      await this.plugin.engine.stopByFile(
-        file,
-        pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs,
-      );
+      await this.plugin.engine.stopByFile(file, pref.fadeOutMs ?? this.plugin.settings.defaultFadeOutMs);
     };
 
     const inlineVol = controls.createEl("input", {
@@ -523,7 +539,6 @@ export default class SoundboardView extends ItemView {
     gearPerBtn.setAttr("aria-label", "Sound settings");
     gearPerBtn.onclick = () => new PerSoundSettingsModal(this.app, this.plugin, file.path).open();
 
-    // If this file was already playing when the row was rendered, highlight it
     if (this.playingFiles.has(file.path)) {
       row.addClass("playing");
       stopBtn.classList.add("playing");
@@ -551,8 +566,6 @@ export default class SoundboardView extends ItemView {
     }
     return null;
   }
-
-  // ===================== Playlists =====================
 
   private renderPlaylistCard(container: HTMLElement, pl: PlaylistInfo) {
     const card = container.createDiv({ cls: "ttrpg-sb-card playlist" });
@@ -648,7 +661,6 @@ export default class SoundboardView extends ItemView {
   }
 
   private updatePlayingVisuals() {
-    // Singles – stop buttons
     const btns = this.contentEl.querySelectorAll<HTMLButtonElement>(".ttrpg-sb-stop[data-path]");
     btns.forEach((b) => {
       const p = b.dataset.path || "";
@@ -656,14 +668,12 @@ export default class SoundboardView extends ItemView {
       else b.classList.remove("playing");
     });
 
-    // Singles – rows in simple view
     const rows = this.contentEl.querySelectorAll<HTMLElement>(".ttrpg-sb-simple-row[data-path]");
     rows.forEach((r) => {
       const p = r.dataset.path || "";
       r.toggleClass("playing", this.playingFiles.has(p));
     });
 
-    // Playlists – stop buttons
     const pbtns = this.contentEl.querySelectorAll<HTMLButtonElement>(".ttrpg-sb-stop[data-playlist]");
     pbtns.forEach((b) => {
       const p = b.dataset.playlist || "";
@@ -671,7 +681,6 @@ export default class SoundboardView extends ItemView {
       b.toggleClass("playing", active);
     });
 
-    // Playlists – rows in simple view
     const plRows = this.contentEl.querySelectorAll<HTMLElement>(".ttrpg-sb-simple-row[data-playlist]");
     plRows.forEach((r) => {
       const p = r.dataset.playlist || "";

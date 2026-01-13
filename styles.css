@@ -2,7 +2,7 @@
   --ttrpg-tile-height: 100px;
   --ttrpg-grid-gap: 16px;
   --ttrpg-playlist-accent: #d4af37; /* golden yellow */
-  --ttrpg-note-icon-size: 40px;     /* default size for note button images */
+  --ttrpg-note-icon-size: 40px; /* default size for note button images */
 }
 
 /* Root container for the view: remove extra top padding */
@@ -86,6 +86,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   background: var(--background-secondary);
+  color: var(--text-normal);
   cursor: pointer;
 }
 
@@ -98,23 +99,35 @@
 }
 
 .ttrpg-sb-card {
-  border: 1px solid var(--background-modifier-border);
+  /* Per-category style variables (default = "sounds") */
+  --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-sounds, var(--background-primary));
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-sounds, var(--background-modifier-border));
+  --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-sounds, var(--background-modifier-border));
+
+  border: 1px solid var(--ttrpg-sb-card-border);
   border-radius: 6px;
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--background-primary);
+  background: var(--ttrpg-sb-card-bg);
 }
 
 /* Playlist cards: slightly golden background */
 .ttrpg-sb-card.playlist {
-  border-color: var(--ttrpg-playlist-accent);
-  background: color-mix(
-    in srgb,
-    var(--ttrpg-playlist-accent) 15%,
-    var(--background-primary) 85%
+  --ttrpg-sb-card-bg: var(
+    --ttrpg-sb-card-bg-playlists,
+    color-mix(in srgb, var(--ttrpg-playlist-accent) 15%, var(--background-primary) 85%)
   );
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-playlists, var(--ttrpg-playlist-accent));
+  --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-playlists, var(--ttrpg-playlist-accent));
+}
+
+/* Ambience cards should NOT inherit "sounds" styles when ambience styles are not set */
+.ttrpg-sb-card.ambience {
+  --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-ambience, var(--background-primary));
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-ambience, var(--background-modifier-border));
+  --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-ambience, var(--background-modifier-border));
 }
 
 .ttrpg-sb-title {
@@ -131,15 +144,11 @@
   width: 100%;
   height: var(--ttrpg-tile-height, 220px);
   border-radius: 6px;
-  background: linear-gradient(
-    135deg,
-    var(--background-modifier-form-field),
-    var(--background-secondary)
-  );
+  background: linear-gradient(135deg, var(--background-modifier-form-field), var(--background-secondary));
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  border: 1px solid var(--background-modifier-border);
+  border: 1px solid var(--ttrpg-sb-tile-border, var(--background-modifier-border));
   cursor: pointer;
 }
 
@@ -150,13 +159,8 @@
 /* Playlist tiles: gold border + same full-cover thumbnail behavior */
 .ttrpg-sb-tile.playlist {
   border-color: var(--ttrpg-playlist-accent);
-  background-color: color-mix(
-    in srgb,
-    var(--ttrpg-playlist-accent) 12%,
-    var(--background-secondary) 88%
-  );
-  box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
+  background-color: color-mix(in srgb, var(--ttrpg-playlist-accent) 12%, var(--background-secondary) 88%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
 }
 
 /* Button row under tiles */
@@ -172,7 +176,7 @@
   min-width: 40px;
 }
 
-/* Base button styles */
+/* Base button styles (theme-like defaults; no per-category coloring) */
 .ttrpg-sb-icon-btn,
 .ttrpg-sb-stop {
   display: inline-flex;
@@ -185,6 +189,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   background: var(--background-secondary);
+  color: var(--text-normal);
   cursor: pointer;
 }
 
@@ -357,8 +362,7 @@
 /* Playing state: glow around the image, but still no filled box */
 .ttrpg-sb-stop.ttrpg-sb-note-thumb.playing img {
   border: none;
-  box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 60%, transparent);
 }
 
 .ttrpg-sb-stop.ttrpg-sb-note-thumb,

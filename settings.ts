@@ -1,5 +1,23 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type TTRPGSoundboardPlugin from "./main";
+import { StyleSettingsModal } from "./ui/StyleSettingsModal";
+
+export interface StyleCategorySettings {
+  cardBg: string;
+  cardBorder: string;
+  tileBorder: string;
+  buttonBg: string;
+  buttonBorder: string;
+  buttonColor: string;
+}
+
+export interface SoundboardStyleSettings {
+  sounds: StyleCategorySettings;
+  ambience: StyleCategorySettings;
+  playlists: StyleCategorySettings;
+}
+
+export type ArrangementGroup = "sounds" | "ambience" | "playlists";
 
 export interface SoundboardSettings {
   rootFolder: string; // e.g. "Soundbar"
@@ -21,6 +39,15 @@ export interface SoundboardSettings {
 
   thumbnailFolderEnabled: boolean; // if enabled, thumbnails are looked up in a dedicated folder
   thumbnailFolderPath: string; // vault path to the thumbnail folder
+
+  // Arrangement
+  arrangementEnabled: boolean;
+  arrangementFirst: ArrangementGroup | "default";
+  arrangementSecond: ArrangementGroup | "default";
+  arrangementThird: ArrangementGroup | "default";
+
+  // Styles
+  style: SoundboardStyleSettings;
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
@@ -43,6 +70,38 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
 
   thumbnailFolderEnabled: false,
   thumbnailFolderPath: "",
+
+  arrangementEnabled: false,
+  arrangementFirst: "default",
+  arrangementSecond: "default",
+  arrangementThird: "default",
+
+  style: {
+    sounds: {
+      cardBg: "",
+      cardBorder: "",
+      tileBorder: "",
+      buttonBg: "",
+      buttonBorder: "",
+      buttonColor: "",
+    },
+    ambience: {
+      cardBg: "",
+      cardBorder: "",
+      tileBorder: "",
+      buttonBg: "",
+      buttonBorder: "",
+      buttonColor: "",
+    },
+    playlists: {
+      cardBg: "",
+      cardBorder: "",
+      tileBorder: "",
+      buttonBg: "",
+      buttonBorder: "",
+      buttonColor: "",
+    },
+  },  
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -209,6 +268,15 @@ export class SoundboardSettingTab extends PluginSettingTab {
 
     // Appearance
     new Setting(containerEl).setName("Appearance").setHeading();
+	
+    new Setting(containerEl)
+      .setName("Soundboard style")
+      .setDesc("Configure card/tile/button colors for sounds, ambience and playlists.")
+      .addButton((b) =>
+        b.setButtonText("Open style editor").onClick(() => {
+          new StyleSettingsModal(this.app, this.plugin).open();
+        }),
+      );
 
     new Setting(containerEl)
       .setName("Four pinned folder slots")
@@ -239,6 +307,44 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.refreshViews();
           }),
       );
+	  
+    // Arrangement
+    new Setting(containerEl).setName("Arrangement").setHeading();
+
+    new Setting(containerEl)
+      .setName("Enable arrangement")
+      .setDesc("If enabled, the soundboard groups sounds by category and shows them in your chosen order.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.arrangementEnabled).onChange((v) => {
+          this.plugin.settings.arrangementEnabled = v;
+          void this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        }),
+      );
+
+    const addArrDropdown = (name: string, key: "arrangementFirst" | "arrangementSecond" | "arrangementThird") => {
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc("Default means: remaining groups are appended in the default order.")
+        .addDropdown((dd) => {
+          dd.addOption("default", "Default");
+          dd.addOption("sounds", "Sounds");
+          dd.addOption("ambience", "Ambience");
+          dd.addOption("playlists", "Playlists");
+          dd.setValue(this.plugin.settings[key]);
+          dd.onChange((val) => {
+            if (val === "default" || val === "sounds" || val === "ambience" || val === "playlists") {
+              this.plugin.settings[key] = val;
+              void this.plugin.saveSettings();
+              this.plugin.refreshViews();
+            }
+          });
+        });
+    };
+
+    addArrDropdown("First group", "arrangementFirst");
+    addArrDropdown("Second group", "arrangementSecond");
+    addArrDropdown("Third group", "arrangementThird");
 
     // Per-folder view config
     new Setting(containerEl).setName("Per-folder view mode").setHeading();

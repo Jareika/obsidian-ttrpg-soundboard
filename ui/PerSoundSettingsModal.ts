@@ -18,12 +18,15 @@ export class PerSoundSettingsModal extends Modal {
 
     const pref = this.plugin.getSoundPref(this.filePath);
     const defaultLoop = this.plugin.getDefaultLoopForPath(this.filePath);
+    const isAmbience = this.plugin.isAmbiencePath(this.filePath);
 
     let fadeInStr = typeof pref.fadeInMs === "number" ? String(pref.fadeInMs) : "";
     let fadeOutStr = typeof pref.fadeOutMs === "number" ? String(pref.fadeOutMs) : "";
     let vol = typeof pref.volume === "number" ? pref.volume : 1;
-    const originalVol = vol; // keep original volume so Cancel can restore it
+    const originalVol = vol;
     let loop = typeof pref.loop === "boolean" ? pref.loop : defaultLoop;
+    let crossfadeStr =
+      typeof pref.crossfadeMs === "number" ? String(pref.crossfadeMs) : "";
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -70,6 +73,20 @@ export class PerSoundSettingsModal extends Modal {
           loop = v;
         }),
       );
+	  
+    if (isAmbience) {
+      new Setting(contentEl)
+        .setName("Crossfade (ms)")
+        .setDesc("When looping, restart earlier by this amount to skip silence at the end. Leave empty for default.")
+        .addText((ti) =>
+          ti
+            .setPlaceholder("E.g. 1500")
+            .setValue(crossfadeStr)
+            .onChange((v) => {
+              crossfadeStr = v;
+            }),
+        );
+    }
 
     new Setting(contentEl)
       .setName("Insert note button")
@@ -87,6 +104,7 @@ export class PerSoundSettingsModal extends Modal {
           delete pref.fadeOutMs;
           delete pref.volume;
           delete pref.loop;
+		  delete pref.crossfadeMs;
 
           this.plugin.setSoundPref(this.filePath, pref);
           await this.plugin.saveSettings();
@@ -102,9 +120,12 @@ export class PerSoundSettingsModal extends Modal {
         b.setCta().setButtonText("Save").onClick(async () => {
           const fi = fadeInStr.trim() === "" ? undefined : Number(fadeInStr);
           const fo = fadeOutStr.trim() === "" ? undefined : Number(fadeOutStr);
+          const cf =
+            crossfadeStr.trim() === "" ? undefined : Number(crossfadeStr);
 
           if (fi != null && Number.isNaN(fi)) return;
           if (fo != null && Number.isNaN(fo)) return;
+          if (cf != null && Number.isNaN(cf)) return;
 
           pref.fadeInMs = fi;
           pref.fadeOutMs = fo;
@@ -115,6 +136,11 @@ export class PerSoundSettingsModal extends Modal {
             delete pref.loop;
           } else {
             pref.loop = loop;
+          }
+
+          if (isAmbience) {
+            if (cf == null || cf <= 0) delete pref.crossfadeMs;
+            else pref.crossfadeMs = cf;
           }
 
           this.plugin.setSoundPref(this.filePath, pref);

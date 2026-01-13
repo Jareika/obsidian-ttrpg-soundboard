@@ -1,9 +1,10 @@
 import { App, TFile } from "obsidian";
 
 export interface PlayOptions {
-  volume?: number; // 0..1
+  volume?: number;
   loop?: boolean;
   fadeInMs?: number;
+  loopEndTrimSeconds?: number;
 }
 
 export interface StopOptions {
@@ -215,6 +216,14 @@ export class AudioEngine {
   // ===== Playback control =====
 
   async play(file: TFile, opts: PlayOptions = {}) {
+    const needsPreciseLoop =
+      !!opts.loop && typeof opts.loopEndTrimSeconds === "number" && opts.loopEndTrimSeconds > 0;
+
+    if (needsPreciseLoop) {
+      // MediaElement cannot do loopStart/loopEnd, so force buffer playback.
+      return await this.playWithBuffer(file, opts);
+    }
+
     if (this.isLargeFile(file)) {
       try {
         return await this.playWithMediaElement(file, opts);
@@ -239,6 +248,13 @@ export class AudioEngine {
 
     const loop = !!opts.loop;
     source.loop = loop;
+
+    const trim = typeof opts.loopEndTrimSeconds === "number" ? Math.max(0, opts.loopEndTrimSeconds) : 0;
+    if (loop && trim > 0) {
+      source.loopStart = 0;
+      const loopEnd = Math.max(0.001, buffer.duration - trim);
+      source.loopEnd = Math.max(source.loopStart + 0.001, loopEnd);
+    }
 
     gain.connect(this.masterGain!);
     source.connect(gain);
