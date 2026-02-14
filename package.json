@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ttrpg-soundboard",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Soundboard plugin for Obsidian (TTRPG)",
   "main": "main.js",
   "scripts": {

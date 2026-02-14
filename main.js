@@ -1460,8 +1460,11 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     const state = this.plugin.engine.getPathPlaybackState(path);
     const isPaused = state === "paused";
     const activePlaylistPath = this.plugin.getActivePlaylistPathForTrackPath(path);
+    const isAmbience = this.plugin.isAmbiencePath(path);
     const card = grid.createDiv({ cls: "ttrpg-sb-now-card" });
     if (isPaused) card.addClass("paused");
+    if (activePlaylistPath) card.addClass("playlist");
+    else if (isAmbience) card.addClass("ambience");
     card.createDiv({ cls: "ttrpg-sb-now-title", text: name });
     const controls = card.createDiv({ cls: "ttrpg-sb-now-controls" });
     const stopBtn = controls.createEl("button", {
