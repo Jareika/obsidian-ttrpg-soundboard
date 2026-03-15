@@ -103,6 +103,9 @@
   --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-sounds, var(--background-primary));
   --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-sounds, var(--background-modifier-border));
   --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-sounds, var(--background-modifier-border));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-sounds, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-sounds, var(--background-modifier-border));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-sounds, var(--text-normal));
 
   border: 1px solid var(--ttrpg-sb-card-border);
   border-radius: 6px;
@@ -121,6 +124,9 @@
   );
   --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-playlists, var(--ttrpg-playlist-accent));
   --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-playlists, var(--ttrpg-playlist-accent));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-playlists, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-playlists, var(--ttrpg-playlist-accent));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-playlists, var(--text-normal));
 }
 
 /* Ambience cards should NOT inherit "sounds" styles when ambience styles are not set */
@@ -128,6 +134,9 @@
   --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-ambience, var(--background-primary));
   --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-ambience, var(--background-modifier-border));
   --ttrpg-sb-tile-border: var(--ttrpg-sb-tile-border-ambience, var(--background-modifier-border));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-ambience, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-ambience, var(--background-modifier-border));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-ambience, var(--text-normal));
 }
 
 .ttrpg-sb-title {
@@ -205,6 +214,21 @@
 .ttrpg-sb-stop {
   padding: 0 10px;
   line-height: 1;
+}
+
+/* Use per-category button colors inside cards and simple-list rows only */
+.ttrpg-sb-card .ttrpg-sb-icon-btn,
+.ttrpg-sb-card .ttrpg-sb-stop,
+.ttrpg-sb-simple-row .ttrpg-sb-icon-btn,
+.ttrpg-sb-simple-row .ttrpg-sb-stop {
+  background: var(--ttrpg-sb-btn-bg, var(--background-secondary));
+  border-color: var(--ttrpg-sb-btn-border, var(--background-modifier-border));
+  color: var(--ttrpg-sb-btn-color, var(--text-normal));
+}
+
+.ttrpg-sb-card .ttrpg-sb-icon-btn svg,
+.ttrpg-sb-simple-row .ttrpg-sb-icon-btn svg {
+  color: currentColor;
 }
 
 .push-right {
@@ -301,27 +325,66 @@
   gap: 8px;
 }
 
+/* On tablets, move the volume slider to its own row to preserve usable width */
+body.is-tablet .ttrpg-sb-now-controls {
+  flex-wrap: wrap;
+}
+
+body.is-tablet .ttrpg-sb-now-controls .ttrpg-sb-inline-volume {
+  order: 99;
+  flex: 1 0 100%;
+  width: 100%;
+  min-width: 0;
+}
+
 /* ===== Simple list view ===== */
 
 .ttrpg-sb-simple-list {
-  display: block;
-}
-
-.ttrpg-sb-simple-row {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--background-modifier-border);
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
+.ttrpg-sb-simple-row {
+  /* Per-category style variables (default = "sounds") */
+  --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-sounds, var(--background-primary));
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-sounds, var(--background-modifier-border));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-sounds, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-sounds, var(--background-modifier-border));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-sounds, var(--text-normal));
+
+  padding: 3px;
+  border: 1px solid var(--ttrpg-sb-card-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--ttrpg-sb-card-bg);
+}
+
+.ttrpg-sb-simple-row.ambience {
+  --ttrpg-sb-card-bg: var(--ttrpg-sb-card-bg-ambience, var(--background-primary));
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-ambience, var(--background-modifier-border));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-ambience, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-ambience, var(--background-modifier-border));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-ambience, var(--text-normal));
+}
+
 .ttrpg-sb-simple-row.playing {
-  background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+  box-shadow: inset 0 0 0 2px
+    color-mix(in srgb, var(--interactive-accent) 35%, transparent);
 }
 
 .ttrpg-sb-simple-row.playlist {
-  border-left: 3px solid var(--ttrpg-playlist-accent);
-  padding-left: 5px;
+  --ttrpg-sb-card-bg: var(
+    --ttrpg-sb-card-bg-playlists,
+    color-mix(in srgb, var(--ttrpg-playlist-accent) 15%, var(--background-primary) 85%)
+  );
+  --ttrpg-sb-card-border: var(--ttrpg-sb-card-border-playlists, var(--ttrpg-playlist-accent));
+  --ttrpg-sb-btn-bg: var(--ttrpg-sb-btn-bg-playlists, var(--background-secondary));
+  --ttrpg-sb-btn-border: var(--ttrpg-sb-btn-border-playlists, var(--ttrpg-playlist-accent));
+  --ttrpg-sb-btn-color: var(--ttrpg-sb-btn-color-playlists, var(--text-normal));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ttrpg-playlist-accent) 30%, transparent);
 }
 
 .ttrpg-sb-simple-main {
