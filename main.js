@@ -38,6 +38,7 @@ var AudioEngine = class {
     this.maxCachedBytes = 512 * 1024 * 1024;
     // default 512 MB
     this.mediaElementThresholdBytes = 25 * 1024 * 1024;
+    this.iosLockscreenCompatibilityMode = false;
     this.playing = /* @__PURE__ */ new Map();
     this.masterVolume = 1;
     this.listeners = /* @__PURE__ */ new Set();
@@ -58,13 +59,23 @@ var AudioEngine = class {
   }
   // ===== Master volume / cache config =====
   setMasterVolume(v) {
-    this.masterVolume = Math.max(0, Math.min(1, v));
+    this.masterVolume = this.clamp01(v);
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(
-        this.masterVolume,
-        this.ctx.currentTime
-      );
+      this.masterGain.gain.setValueAtTime(this.masterVolume, this.ctx.currentTime);
     }
+    for (const rec of this.playing.values()) {
+      if (rec.kind === "media-direct") {
+        this.applyDirectElementVolume(rec, rec.lastVolume);
+      }
+    }
+  }
+  /**
+   * Force direct HTMLAudioElement playback without routing through AudioContext.
+   * This is intended as a compatibility mode for platforms where lock-screen
+   * playback is more reliable without Web Audio.
+   */
+  setIOSLockscreenCompatibilityMode(enabled) {
+    this.iosLockscreenCompatibilityMode = !!enabled;
   }
   /**
    * Configure the upper limit of the decoded-audio cache in megabytes.
@@ -89,7 +100,7 @@ var AudioEngine = class {
     this.totalBufferedBytes = 0;
   }
   /**
-   * Configure at which file size (in MB) playback switches to HTMLAudioElement (MediaElement).
+   * Configure at which file size (in MB) playback switches to HTMLAudioElement.
    * 0 disables MediaElement playback completely (always decode to AudioBuffer).
    */
   setMediaElementThresholdMB(mb) {
@@ -149,6 +160,9 @@ var AudioEngine = class {
   }
   // ===== Playback control =====
   async play(file, opts = {}) {
+    if (this.iosLockscreenCompatibilityMode) {
+      return await this.playWithDirectMediaElement(file, opts);
+    }
     const needsPreciseLoop = !!opts.loop && typeof opts.loopEndTrimSeconds === "number" && opts.loopEndTrimSeconds > 0;
     if (needsPreciseLoop) {
       return await this.playWithBuffer(file, opts);
@@ -183,8 +197,8 @@ var AudioEngine = class {
     gain.connect(this.masterGain);
     source.connect(gain);
     const now = ctx.currentTime;
-    const targetVol = Math.max(0, Math.min(1, (_a = opts.volume) != null ? _a : 1));
-    const fadeIn = ((_b = opts.fadeInMs) != null ? _b : 0) / 1e3;
+    const targetVol = this.clamp01((_a = opts.volume) != null ? _a : 1);
+    const fadeIn = Math.max(0, (_b = opts.fadeInMs) != null ? _b : 0) / 1e3;
     if (fadeIn > 0) {
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(targetVol, now + fadeIn);
@@ -202,7 +216,8 @@ var AudioEngine = class {
       state: "playing",
       startTime: now,
       offset: 0,
-      lastVolume: targetVol
+      lastVolume: targetVol,
+      loopEndTrimSeconds: trim
     };
     this.playing.set(id, rec);
     source.onended = () => {
@@ -239,8 +254,8 @@ var AudioEngine = class {
     node.connect(gain);
     gain.connect(this.masterGain);
     const now = ctx.currentTime;
-    const targetVol = Math.max(0, Math.min(1, (_a = opts.volume) != null ? _a : 1));
-    const fadeIn = ((_b = opts.fadeInMs) != null ? _b : 0) / 1e3;
+    const targetVol = this.clamp01((_a = opts.volume) != null ? _a : 1);
+    const fadeIn = Math.max(0, (_b = opts.fadeInMs) != null ? _b : 0) / 1e3;
     if (fadeIn > 0) {
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(targetVol, now + fadeIn);
@@ -275,7 +290,97 @@ var AudioEngine = class {
     };
     rec.endedHandler = endedHandler;
     element.addEventListener("ended", endedHandler);
-    await element.play();
+    try {
+      await element.play();
+    } catch (err) {
+      this.playing.delete(id);
+      this.cleanupMediaRecord(rec);
+      throw err;
+    }
+    this.emit({ type: "start", filePath: file.path, id });
+    return {
+      id,
+      stop: (sOpts) => this.stopById(id, sOpts)
+    };
+  }
+  async playWithDirectMediaElement(file, opts = {}) {
+    var _a, _b;
+    const id = this.createId();
+    const element = document.createElement("audio");
+    element.preload = "auto";
+    element.src = this.app.vault.getResourcePath(file);
+    const loop = !!opts.loop;
+    const trim = typeof opts.loopEndTrimSeconds === "number" ? Math.max(0, opts.loopEndTrimSeconds) : 0;
+    element.loop = loop && trim <= 0;
+    const targetVol = this.clamp01((_a = opts.volume) != null ? _a : 1);
+    const fadeInMs = Math.max(0, (_b = opts.fadeInMs) != null ? _b : 0);
+    const rec = {
+      kind: "media-direct",
+      id,
+      element,
+      file,
+      loop,
+      state: "playing",
+      lastVolume: targetVol,
+      endedHandler: null,
+      timeUpdateHandler: null,
+      fadeTimer: null,
+      loopEndTrimSeconds: trim
+    };
+    element.volume = fadeInMs > 0 ? 0 : this.toAppliedDirectVolume(targetVol);
+    this.playing.set(id, rec);
+    const endedHandler = () => {
+      const existing = this.playing.get(id);
+      if (!existing || existing.kind !== "media-direct") return;
+      if (existing.state !== "playing") return;
+      if (existing.loop && existing.loopEndTrimSeconds > 0) {
+        try {
+          existing.element.currentTime = 0;
+          void existing.element.play();
+          return;
+        } catch (e) {
+        }
+      }
+      this.playing.delete(id);
+      this.cleanupDirectMediaRecord(existing);
+      this.emit({
+        type: "stop",
+        filePath: file.path,
+        id,
+        reason: "ended"
+      });
+    };
+    rec.endedHandler = endedHandler;
+    element.addEventListener("ended", endedHandler);
+    if (loop && trim > 0) {
+      const timeUpdateHandler = () => {
+        if (rec.state !== "playing") return;
+        const dur = rec.element.duration;
+        if (!Number.isFinite(dur) || dur <= trim || trim <= 0) return;
+        const restartAt = dur - trim;
+        if (rec.element.currentTime >= restartAt) {
+          try {
+            rec.element.currentTime = 0;
+            if (rec.element.paused) {
+              void rec.element.play();
+            }
+          } catch (e) {
+          }
+        }
+      };
+      rec.timeUpdateHandler = timeUpdateHandler;
+      element.addEventListener("timeupdate", timeUpdateHandler);
+    }
+    try {
+      await element.play();
+    } catch (err) {
+      this.playing.delete(id);
+      this.cleanupDirectMediaRecord(rec);
+      throw err;
+    }
+    if (fadeInMs > 0) {
+      this.animateDirectRecordToRaw(rec, targetVol, fadeInMs);
+    }
     this.emit({ type: "start", filePath: file.path, id });
     return {
       id,
@@ -295,6 +400,9 @@ var AudioEngine = class {
     await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
   }
   async preload(files) {
+    if (this.iosLockscreenCompatibilityMode) {
+      return;
+    }
     for (const f of files) {
       if (this.isLargeFile(f)) continue;
       try {
@@ -309,17 +417,37 @@ var AudioEngine = class {
    * If fadeOutMs > 0, a short fade-out is applied before pausing.
    */
   async pauseByFile(file, fadeOutMs = 0) {
-    if (!this.ctx) return;
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path && p.state === "playing"
     );
     if (!targets.length) return;
-    const ctx = this.ctx;
-    const fadeSec = (fadeOutMs != null ? fadeOutMs : 0) / 1e3;
+    const fadeMs = Math.max(0, fadeOutMs);
     await Promise.all(
       targets.map(
         (rec) => new Promise((resolve) => {
-          if (!ctx) {
+          if (rec.kind === "media-direct") {
+            if (fadeMs > 0) {
+              this.animateDirectRecordToRaw(rec, 0, fadeMs, () => {
+                this.pauseRecord(rec);
+                this.emit({
+                  type: "pause",
+                  filePath: rec.file.path,
+                  id: rec.id
+                });
+                resolve();
+              });
+            } else {
+              this.pauseRecord(rec);
+              this.emit({
+                type: "pause",
+                filePath: rec.file.path,
+                id: rec.id
+              });
+              resolve();
+            }
+            return;
+          }
+          if (!this.ctx) {
             this.pauseRecord(rec);
             this.emit({
               type: "pause",
@@ -329,8 +457,9 @@ var AudioEngine = class {
             resolve();
             return;
           }
+          const fadeSec = fadeMs / 1e3;
           if (fadeSec > 0) {
-            const n = ctx.currentTime;
+            const n = this.ctx.currentTime;
             const cur = rec.gain.gain.value;
             rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
             rec.gain.gain.cancelScheduledValues(n);
@@ -344,7 +473,7 @@ var AudioEngine = class {
                 id: rec.id
               });
               resolve();
-            }, Math.max(1, fadeOutMs));
+            }, Math.max(1, fadeMs));
           } else {
             this.pauseRecord(rec);
             this.emit({
@@ -367,12 +496,28 @@ var AudioEngine = class {
       (p) => p.file.path === file.path && p.state === "paused"
     );
     if (!targets.length) return;
-    await this.ensureContext();
-    const ctx = this.ctx;
-    const fadeSec = (fadeInMs != null ? fadeInMs : 0) / 1e3;
+    const fadeMs = Math.max(0, fadeInMs);
     for (const rec of targets) {
-      const now = ctx.currentTime;
       const target = rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+      if (rec.kind === "media-direct") {
+        this.resumeRecord(rec);
+        if (fadeMs > 0) {
+          rec.element.volume = 0;
+          this.animateDirectRecordToRaw(rec, target, fadeMs);
+        } else {
+          this.applyDirectElementVolume(rec, target);
+        }
+        this.emit({
+          type: "resume",
+          filePath: rec.file.path,
+          id: rec.id
+        });
+        continue;
+      }
+      await this.ensureContext();
+      const ctx = this.ctx;
+      const fadeSec = fadeMs / 1e3;
+      const now = ctx.currentTime;
       if (fadeSec > 0) {
         rec.gain.gain.cancelScheduledValues(now);
         rec.gain.gain.setValueAtTime(0, now);
@@ -395,15 +540,18 @@ var AudioEngine = class {
    * This does not touch the global master gain.
    */
   setVolumeForPath(path, volume) {
-    if (!this.ctx) return;
-    const v = Math.max(0, Math.min(1, volume));
-    const now = this.ctx.currentTime;
+    const v = this.clamp01(volume);
     for (const rec of this.playing.values()) {
-      if (rec.file.path === path) {
-        rec.gain.gain.cancelScheduledValues(now);
-        rec.gain.gain.setValueAtTime(v, now);
-        rec.lastVolume = v;
+      if (rec.file.path !== path) continue;
+      if (rec.kind === "media-direct") {
+        this.setDirectRecordTargetVolume(rec, v);
+        continue;
       }
+      if (!this.ctx) continue;
+      const now = this.ctx.currentTime;
+      rec.gain.gain.cancelScheduledValues(now);
+      rec.gain.gain.setValueAtTime(v, now);
+      rec.lastVolume = v;
     }
   }
   /**
@@ -436,10 +584,14 @@ var AudioEngine = class {
     return "mixed";
   }
   /**
-   * Called when the plugin unloads – closes the AudioContext and drops caches.
+   * Called when the plugin unloads.
    */
   shutdown() {
     var _a;
+    for (const rec of this.playing.values()) {
+      this.cleanupRecord(rec);
+    }
+    this.playing.clear();
     try {
       void ((_a = this.ctx) == null ? void 0 : _a.close());
     } catch (e) {
@@ -447,21 +599,87 @@ var AudioEngine = class {
     this.ctx = null;
     this.masterGain = null;
     this.clearBufferCache();
-    this.playing.clear();
   }
   // ===== Internal helpers =====
+  clamp01(v) {
+    return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+  }
   createId() {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  toAppliedDirectVolume(rawVolume) {
+    return this.clamp01(this.clamp01(rawVolume) * this.masterVolume);
+  }
+  applyDirectElementVolume(rec, rawVolume) {
+    rec.element.volume = this.toAppliedDirectVolume(rawVolume);
+  }
+  setDirectRecordTargetVolume(rec, rawVolume) {
+    rec.lastVolume = this.clamp01(rawVolume);
+    this.applyDirectElementVolume(rec, rec.lastVolume);
+  }
+  cancelDirectFade(rec) {
+    if (rec.fadeTimer != null) {
+      window.clearInterval(rec.fadeTimer);
+      rec.fadeTimer = null;
+    }
+  }
+  animateDirectRecordToRaw(rec, targetRawVolume, durationMs, done) {
+    this.cancelDirectFade(rec);
+    const totalMs = Math.max(0, durationMs);
+    if (totalMs <= 0) {
+      rec.element.volume = this.toAppliedDirectVolume(targetRawVolume);
+      done == null ? void 0 : done();
+      return;
+    }
+    const startApplied = this.clamp01(rec.element.volume);
+    const startedAt = window.performance.now();
+    const step = () => {
+      const elapsed = window.performance.now() - startedAt;
+      const t = Math.min(1, elapsed / totalMs);
+      const targetApplied = this.toAppliedDirectVolume(targetRawVolume);
+      const next = startApplied + (targetApplied - startApplied) * t;
+      rec.element.volume = this.clamp01(next);
+      if (t >= 1) {
+        this.cancelDirectFade(rec);
+        done == null ? void 0 : done();
+      }
+    };
+    step();
+    rec.fadeTimer = window.setInterval(step, 33);
   }
   stopById(id, sOpts) {
     var _a;
     const rec = this.playing.get(id);
     if (!rec) return Promise.resolve();
     this.playing.delete(id);
-    const ctx = this.ctx;
-    const fadeOutMs = (_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0;
-    const fadeOut = fadeOutMs / 1e3;
+    const fadeOutMs = Math.max(0, (_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0);
     const filePath = rec.file.path;
+    if (rec.kind === "media-direct") {
+      return new Promise((resolve) => {
+        if (fadeOutMs > 0) {
+          this.animateDirectRecordToRaw(rec, 0, fadeOutMs, () => {
+            this.cleanupRecord(rec);
+            this.emit({
+              type: "stop",
+              filePath,
+              id,
+              reason: "stopped"
+            });
+            resolve();
+          });
+        } else {
+          this.cleanupRecord(rec);
+          this.emit({
+            type: "stop",
+            filePath,
+            id,
+            reason: "stopped"
+          });
+          resolve();
+        }
+      });
+    }
+    const ctx = this.ctx;
     if (!ctx) {
       this.cleanupRecord(rec);
       this.emit({
@@ -472,6 +690,7 @@ var AudioEngine = class {
       });
       return Promise.resolve();
     }
+    const fadeOut = fadeOutMs / 1e3;
     return new Promise((resolve) => {
       const n = ctx.currentTime;
       if (fadeOut > 0) {
@@ -509,11 +728,17 @@ var AudioEngine = class {
       } catch (e) {
       }
       rec.source = null;
+      try {
+        rec.gain.disconnect();
+      } catch (e) {
+      }
       return;
     }
     if (rec.kind === "media") {
       this.cleanupMediaRecord(rec);
+      return;
     }
+    this.cleanupDirectMediaRecord(rec);
   }
   cleanupMediaRecord(rec) {
     try {
@@ -541,13 +766,37 @@ var AudioEngine = class {
     } catch (e) {
     }
   }
+  cleanupDirectMediaRecord(rec) {
+    this.cancelDirectFade(rec);
+    try {
+      if (rec.endedHandler) {
+        rec.element.removeEventListener("ended", rec.endedHandler);
+      }
+    } catch (e) {
+    }
+    rec.endedHandler = null;
+    try {
+      if (rec.timeUpdateHandler) {
+        rec.element.removeEventListener("timeupdate", rec.timeUpdateHandler);
+      }
+    } catch (e) {
+    }
+    rec.timeUpdateHandler = null;
+    try {
+      rec.element.pause();
+    } catch (e) {
+    }
+    try {
+      rec.element.removeAttribute("src");
+      rec.element.load();
+    } catch (e) {
+    }
+  }
   pauseRecord(rec) {
-    if (!this.ctx) return;
     if (rec.state !== "playing") return;
     if (rec.kind === "buffer") {
-      if (!rec.source) return;
-      const ctx = this.ctx;
-      const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
+      if (!this.ctx || !rec.source) return;
+      const elapsed = Math.max(0, this.ctx.currentTime - rec.startTime);
       const newOffset = rec.offset + elapsed;
       rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
       rec.state = "paused";
@@ -564,22 +813,31 @@ var AudioEngine = class {
       } catch (e) {
       }
       rec.state = "paused";
+      return;
     }
+    this.cancelDirectFade(rec);
+    try {
+      rec.element.pause();
+    } catch (e) {
+    }
+    rec.state = "paused";
   }
   resumeRecord(rec) {
-    if (!this.ctx) return;
     if (rec.state !== "paused") return;
     if (rec.kind === "buffer") {
-      const ctx = this.ctx;
+      if (!this.ctx) return;
       const buffer = rec.buffer;
-      if (!buffer) return;
       const maxOffset = Math.max(0, buffer.duration - 1e-3);
       const offset = Math.max(0, Math.min(rec.offset, maxOffset));
-      const source = ctx.createBufferSource();
+      const source = this.ctx.createBufferSource();
       source.buffer = buffer;
       source.loop = rec.loop;
-      const gain = rec.gain;
-      source.connect(gain);
+      if (rec.loop && rec.loopEndTrimSeconds > 0) {
+        source.loopStart = 0;
+        const loopEnd = Math.max(1e-3, buffer.duration - rec.loopEndTrimSeconds);
+        source.loopEnd = Math.max(source.loopStart + 1e-3, loopEnd);
+      }
+      source.connect(rec.gain);
       const id = rec.id;
       source.onended = () => {
         const existing = this.playing.get(id);
@@ -595,7 +853,7 @@ var AudioEngine = class {
       };
       rec.source = source;
       rec.state = "playing";
-      rec.startTime = ctx.currentTime;
+      rec.startTime = this.ctx.currentTime;
       source.start(0, offset);
       return;
     }
@@ -605,6 +863,12 @@ var AudioEngine = class {
         void rec.element.play();
       } catch (e) {
       }
+      return;
+    }
+    rec.state = "playing";
+    try {
+      void rec.element.play();
+    } catch (e) {
     }
   }
   touchBufferKey(key) {
@@ -1645,6 +1909,7 @@ var DEFAULT_SETTINGS = {
   toolbarFourFolders: false,
   maxAudioCacheMB: 512,
   // default 512 MB of decoded audio
+  iosLockscreenCompatibilityMode: false,
   thumbnailFolderEnabled: false,
   thumbnailFolderPath: "",
   arrangementEnabled: false,
@@ -1747,7 +2012,7 @@ var SoundboardSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Threshold for faster large\u2011file audio playback (mb)").setDesc(
+    new import_obsidian6.Setting(containerEl).setName("Threshold for faster large-file audio playback (mb)").setDesc(
       "Files larger than this threshold are played via the htmlaudioelement for faster startup without full decoding. Set to 0 to disable."
     ).addSlider(
       (s) => s.setLimits(0, 512, 1).setValue(this.plugin.settings.mediaElementThresholdMB).setDynamicTooltip().onChange((v) => {
@@ -1757,13 +2022,23 @@ var SoundboardSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Decoded audio cache.").setDesc(
+    new import_obsidian6.Setting(containerEl).setName("Decoded audio cache").setDesc(
       "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal random access memory, more decoding)."
     ).addSlider(
       (s) => s.setLimits(0, 2048, 16).setValue(this.plugin.settings.maxAudioCacheMB).setDynamicTooltip().onChange((v) => {
         var _a2;
         this.plugin.settings.maxAudioCacheMB = v;
         (_a2 = this.plugin.engine) == null ? void 0 : _a2.setCacheLimitMB(v);
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian6.Setting(containerEl).setName("Ipad/iphone lock-screen compatibility mode").setDesc(
+      "This can help if sounds become silent after screen lock. Applies to newly started sounds."
+    ).addToggle(
+      (tg) => tg.setValue(this.plugin.settings.iosLockscreenCompatibilityMode).onChange((v) => {
+        var _a2;
+        this.plugin.settings.iosLockscreenCompatibilityMode = v;
+        (_a2 = this.plugin.engine) == null ? void 0 : _a2.setIOSLockscreenCompatibilityMode(v);
         void this.plugin.saveSettings();
       })
     );
@@ -2121,8 +2396,8 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     this.pendingDuration = /* @__PURE__ */ new Map();
     this.currentDurationLoads = 0;
     this.maxConcurrentDurationLoads = 3;
-    // Remember the last active MarkdownView so we can insert buttons
-    // even if the user clicks in the soundboard sidebar.
+    // Remember the last active MarkdownView so buttons can be inserted
+    // even when the user currently focuses the soundboard sidebar.
     this.lastMarkdownView = null;
   }
   async onload() {
@@ -2132,6 +2407,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     this.engine.setMasterVolume(this.settings.masterVolume);
     this.engine.setMediaElementThresholdMB(this.settings.mediaElementThresholdMB);
     this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
+    this.engine.setIOSLockscreenCompatibilityMode(this.settings.iosLockscreenCompatibilityMode);
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         const view = leaf == null ? void 0 : leaf.view;
@@ -2453,7 +2729,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
   }
   /**
    * Adjust volume for all currently playing tracks inside a playlist folder.
-   * This does NOT change any saved per-sound volume preferences.
+   * This does not change any saved per-sound volume preferences.
    */
   updateVolumeForPlaylistFolder(folderPath, rawVolume) {
     const playingPaths = this.engine.getPlayingFilePaths();

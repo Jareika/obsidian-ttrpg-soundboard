@@ -67,7 +67,7 @@ function unknownToError(err: unknown, fallbackMessage = "Unknown error"): Error 
     return new Error(err.description ?? err.toString());
   }
 
-  // Some APIs throw objects that contain a "message" but are not instanceof Error (e.g. certain DOM exceptions).
+  // Some APIs throw objects that contain a "message" but are not instanceof Error.
   if (typeof err === "object" && err !== null) {
     const maybeMsg = (err as { message?: unknown }).message;
     if (typeof maybeMsg === "string" && maybeMsg.trim()) {
@@ -81,7 +81,7 @@ function unknownToError(err: unknown, fallbackMessage = "Unknown error"): Error 
     const json = JSON.stringify(err);
     if (json && json !== "{}") return new Error(json);
   } catch {
-    // ignore
+    // Ignore JSON conversion failures.
   }
 
   return new Error(fallbackMessage);
@@ -118,8 +118,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private currentDurationLoads = 0;
   private readonly maxConcurrentDurationLoads = 3;
 
-  // Remember the last active MarkdownView so we can insert buttons
-  // even if the user clicks in the soundboard sidebar.
+  // Remember the last active MarkdownView so buttons can be inserted
+  // even when the user currently focuses the soundboard sidebar.
   private lastMarkdownView: MarkdownView | null = null;
 
   async onload() {
@@ -128,10 +128,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     this.engine = new AudioEngine(this.app);
     this.engine.setMasterVolume(this.settings.masterVolume);
-	this.engine.setMediaElementThresholdMB(this.settings.mediaElementThresholdMB);
+    this.engine.setMediaElementThresholdMB(this.settings.mediaElementThresholdMB);
     this.engine.setCacheLimitMB(this.settings.maxAudioCacheMB);
+    this.engine.setIOSLockscreenCompatibilityMode(this.settings.iosLockscreenCompatibilityMode);
 
-    // Track last active MarkdownView
+    // Track the last active MarkdownView.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         const view = leaf?.view;
@@ -143,7 +144,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const current = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (current) this.lastMarkdownView = current;
 
-    // Keep note buttons and playlist state in sync with engine events
+    // Keep note buttons and playlist state in sync with engine events.
     this.engineNoteUnsub = this.engine.on((e) => {
       if (e.type === "stop") {
         const playlistPath = this.playIdToPlaylist.get(e.id);
@@ -165,7 +166,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     // Views
     this.registerView(VIEW_TYPE_TTRPG_SOUNDBOARD, (leaf: WorkspaceLeaf) => new SoundboardView(leaf, this));
-
     this.registerView(VIEW_TYPE_TTRPG_NOWPLAYING, (leaf: WorkspaceLeaf) => new NowPlayingView(leaf, this));
 
     // Ribbon + commands
@@ -261,12 +261,12 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     this.addSettingTab(new SoundboardSettingTab(this.app, this));
 
-    // After layout restore, make sure all views are wired to the current library
+    // After layout restore, make sure all views are wired to the current library.
     this.app.workspace.onLayoutReady(() => {
       this.refreshViews();
     });
 
-    // Transform special markdown syntax into note buttons
+    // Transform special markdown syntax into note buttons.
     this.registerMarkdownPostProcessor((el) => {
       this.processNoteButtons(el);
     });
@@ -283,7 +283,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.playlistStates.clear();
     this.playIdToPlaylist.clear();
     this.engine?.shutdown();
-    // Leave existing leaves in the workspace; user keeps their layout.
   }
 
   // ===== CSS helper =====
@@ -390,7 +389,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     for (const leaf of leaves) {
       void this.rebindLeafIfNeeded(leaf);
     }
-    // Now-playing views only depend on engine events, not on the library.
   }
 
   private async rebindLeafIfNeeded(leaf: WorkspaceLeaf): Promise<void> {
@@ -400,7 +398,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return;
     }
     try {
-      // Re-create the view so the current class version is used
       await leaf.setViewState({
         type: VIEW_TYPE_TTRPG_SOUNDBOARD,
         active: true,
@@ -472,9 +469,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   private getAllAudioFilesInLibrary(): TFile[] {
     const unique = new Map<string, TFile>();
-    // Singles
     for (const f of this.library.allSingles) unique.set(f.path, f);
-    // Playlists
     for (const top of this.library.topFolders) {
       const fc = this.library.byFolder[top];
       if (!fc) continue;
@@ -518,7 +513,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   /**
    * Adjust volume for all currently playing tracks inside a playlist folder.
-   * This does NOT change any saved per-sound volume preferences.
+   * This does not change any saved per-sound volume preferences.
    */
   updateVolumeForPlaylistFolder(folderPath: string, rawVolume: number) {
     const playingPaths = this.engine.getPlayingFilePaths();
@@ -685,7 +680,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
             try {
               cb(seconds);
             } catch {
-              // ignore callback errors
+              // Ignore callback errors.
             }
           }
           job.callbacks.clear();
@@ -696,7 +691,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
             try {
               cb(0);
             } catch {
-              // ignore callback errors
+              // Ignore callback errors.
             }
           }
           job.callbacks.clear();
@@ -806,7 +801,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       volume: effective,
       loop: this.getEffectiveLoopForPath(path),
       fadeInMs,
-	  loopEndTrimSeconds,
+      loopEndTrimSeconds,
     });
   }
 
@@ -844,7 +839,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // ignore errors when stopping an already-stopped handle
+        // Ignore errors when stopping an already-stopped handle.
       }
       st.handle = undefined;
     }
@@ -868,7 +863,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     try {
       await st.handle.stop({ fadeOutMs });
     } catch {
-      // ignore errors when stopping an already-stopped handle
+      // Ignore errors when stopping an already-stopped handle.
     }
 
     st.handle = undefined;
@@ -911,7 +906,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // ignore
+        // Ignore errors when stopping an already-stopped handle.
       }
       st.handle = undefined;
     }
@@ -954,7 +949,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch {
-        // ignore
+        // Ignore errors when stopping an already-stopped handle.
       }
       st.handle = undefined;
     }
@@ -975,7 +970,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       this.playlistStates.set(pl.path, st);
     }
 
-    // Sanitize indices after library reloads
+    // Sanitize indices after library reloads.
     const trackCount = pl.tracks.length;
     if (st.indices.length) {
       const maxIndex = trackCount - 1;
@@ -1051,7 +1046,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     const trackIdx = st.indices[position];
     if (trackIdx < 0 || trackIdx >= trackCount) {
-      // Playlist changed in an unexpected way, rebuild indices from scratch
       st.indices = this.buildFullTrackIndexList(trackCount);
       st.position = 0;
       if (!st.indices.length) {
@@ -1149,7 +1143,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     const spec = rangeSpec.trim();
 
-    // Range form: "A-B"
     const rangeMatch = spec.match(/^(\d+)\s*-\s*(\d+)$/);
     if (rangeMatch) {
       const start1 = parseInt(rangeMatch[1], 10);
@@ -1170,7 +1163,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return indices;
     }
 
-    // Single index: "N"
     const singleMatch = spec.match(/^(\d+)$/);
     if (singleMatch) {
       const n = parseInt(singleMatch[1], 10);
@@ -1209,7 +1201,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
    * into clickable buttons that trigger playback.
    */
   private processNoteButtons(root: HTMLElement) {
-    // ----- Phase 1: normal links rendered as <a> -----
     const anchors = root.querySelectorAll<HTMLAnchorElement>(
       'a[href^="ttrpg-sound:"], a[href^="ttrpg-playlist:"]',
     );
@@ -1221,7 +1212,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       const label = a.textContent || "";
 
       if (hrefAttr.startsWith("ttrpg-sound:")) {
-        // Single sound button
         const raw = hrefAttr.slice("ttrpg-sound:".length);
         const path = raw.replace(/^\/+/, "");
 
@@ -1229,8 +1219,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
 
-        // Optional thumbnail path is stored in the link title attribute:
-        // [Label](ttrpg-sound:Path "thumbs/img.png")
         const thumbPath = a.getAttribute("title")?.trim();
         if (thumbPath) {
           const af = this.app.vault.getAbstractFileByPath(thumbPath);
@@ -1257,7 +1245,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         this.noteButtons.add(button);
         a.replaceWith(button);
       } else if (hrefAttr.startsWith("ttrpg-playlist:")) {
-        // Playlist button
         const raw = hrefAttr.slice("ttrpg-playlist:".length);
         const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
         const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
@@ -1281,7 +1268,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       }
     }
 
-    // ----- Phase 2: fallback for raw Markdown that was not parsed as <a> -----
     const pattern =
       /\[([^\]]+)\]\((ttrpg-sound|ttrpg-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
 
@@ -1291,7 +1277,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     while ((node = walker.nextNode())) {
       if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.includes("ttrpg-")) {
         const parent = node.parentElement;
-        // Do not touch code/pre blocks
         if (parent && (parent.tagName === "CODE" || parent.tagName === "PRE")) {
           continue;
         }
@@ -1349,7 +1334,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           this.noteButtons.add(button);
           frag.appendChild(button);
         } else {
-          // ttrpg-playlist
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
@@ -1399,7 +1383,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const isAmb = this.isAmbiencePath(path);
     const baseVol = pref.volume ?? 1;
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
-	const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
+    const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
 
     const playing = new Set(this.engine.getPlayingFilePaths());
 
@@ -1413,7 +1397,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
         fadeInMs: pref.fadeInMs ?? this.settings.defaultFadeInMs,
-		loopEndTrimSeconds,
+        loopEndTrimSeconds,
       });
     }
 

@@ -38,29 +38,42 @@ type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
 
 interface PlaybackRecordBase {
   id: string;
-  gain: GainNode;
   file: TFile;
   loop: boolean;
   state: "playing" | "paused";
-  lastVolume: number; // last non-zero volume used for fades / resume
+  lastVolume: number; // target per-track volume before global master volume
 }
 
-interface BufferPlaybackRecord extends PlaybackRecordBase {
+interface GainPlaybackRecordBase extends PlaybackRecordBase {
+  gain: GainNode;
+}
+
+interface BufferPlaybackRecord extends GainPlaybackRecordBase {
   kind: "buffer";
   source: AudioBufferSourceNode | null;
   buffer: AudioBuffer;
   startTime: number; // AudioContext time when the current segment started
   offset: number; // seconds already played before startTime (for resume)
+  loopEndTrimSeconds: number;
 }
 
-interface MediaPlaybackRecord extends PlaybackRecordBase {
+interface MediaPlaybackRecord extends GainPlaybackRecordBase {
   kind: "media";
   element: HTMLAudioElement;
   node: MediaElementAudioSourceNode;
   endedHandler: (() => void) | null;
 }
 
-type PlaybackRecord = BufferPlaybackRecord | MediaPlaybackRecord;
+interface DirectMediaPlaybackRecord extends PlaybackRecordBase {
+  kind: "media-direct";
+  element: HTMLAudioElement;
+  endedHandler: (() => void) | null;
+  timeUpdateHandler: (() => void) | null;
+  fadeTimer: number | null;
+  loopEndTrimSeconds: number;
+}
+
+type PlaybackRecord = BufferPlaybackRecord | MediaPlaybackRecord | DirectMediaPlaybackRecord;
 
 export type PathPlaybackState = "none" | "playing" | "paused" | "mixed";
 
@@ -74,8 +87,10 @@ export class AudioEngine {
   private bufferUsage = new Map<string, number>(); // path -> approximate bytes
   private totalBufferedBytes = 0;
   private maxCachedBytes = 512 * 1024 * 1024; // default 512 MB
-  
+
   private mediaElementThresholdBytes = 25 * 1024 * 1024;
+  private iosLockscreenCompatibilityMode = false;
+
   private playing = new Map<string, PlaybackRecord>();
   private masterVolume = 1;
   private listeners = new Set<(e: PlaybackEvent) => void>();
@@ -96,7 +111,7 @@ export class AudioEngine {
       try {
         void fn(e);
       } catch {
-        // Ignore listener errors so one bad listener does not break others
+        // Ignore listener errors so one bad listener does not break others.
       }
     });
   }
@@ -104,13 +119,26 @@ export class AudioEngine {
   // ===== Master volume / cache config =====
 
   setMasterVolume(v: number) {
-    this.masterVolume = Math.max(0, Math.min(1, v));
+    this.masterVolume = this.clamp01(v);
+
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(
-        this.masterVolume,
-        this.ctx.currentTime,
-      );
+      this.masterGain.gain.setValueAtTime(this.masterVolume, this.ctx.currentTime);
     }
+
+    for (const rec of this.playing.values()) {
+      if (rec.kind === "media-direct") {
+        this.applyDirectElementVolume(rec, rec.lastVolume);
+      }
+    }
+  }
+
+  /**
+   * Force direct HTMLAudioElement playback without routing through AudioContext.
+   * This is intended as a compatibility mode for platforms where lock-screen
+   * playback is more reliable without Web Audio.
+   */
+  setIOSLockscreenCompatibilityMode(enabled: boolean) {
+    this.iosLockscreenCompatibilityMode = !!enabled;
   }
 
   /**
@@ -137,9 +165,9 @@ export class AudioEngine {
     this.bufferUsage.clear();
     this.totalBufferedBytes = 0;
   }
-  
+
   /**
-   * Configure at which file size (in MB) playback switches to HTMLAudioElement (MediaElement).
+   * Configure at which file size (in MB) playback switches to HTMLAudioElement.
    * 0 disables MediaElement playback completely (always decode to AudioBuffer).
    */
   setMediaElementThresholdMB(mb: number) {
@@ -179,7 +207,6 @@ export class AudioEngine {
   async loadBuffer(file: TFile): Promise<AudioBuffer> {
     const key = file.path;
 
-    // If caching is enabled and we have a buffer, reuse it (and mark as recently used).
     if (this.maxCachedBytes > 0) {
       const cached = this.buffers.get(key);
       if (cached) {
@@ -195,8 +222,7 @@ export class AudioEngine {
       bin instanceof ArrayBuffer ? bin : new Uint8Array(bin).buffer;
 
     const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      // decodeAudioData also returns a Promise in modern browsers.
-      // Here we intentionally use the callback signature and ignore that Promise.
+      // The callback form is used here to keep compatibility simple.
       void ctx.decodeAudioData(arrBuf.slice(0), resolve, reject);
     });
 
@@ -216,11 +242,14 @@ export class AudioEngine {
   // ===== Playback control =====
 
   async play(file: TFile, opts: PlayOptions = {}) {
+    if (this.iosLockscreenCompatibilityMode) {
+      return await this.playWithDirectMediaElement(file, opts);
+    }
+
     const needsPreciseLoop =
       !!opts.loop && typeof opts.loopEndTrimSeconds === "number" && opts.loopEndTrimSeconds > 0;
 
     if (needsPreciseLoop) {
-      // MediaElement cannot do loopStart/loopEnd, so force buffer playback.
       return await this.playWithBuffer(file, opts);
     }
 
@@ -228,10 +257,10 @@ export class AudioEngine {
       try {
         return await this.playWithMediaElement(file, opts);
       } catch {
-        // Fallback to buffer playback (for rare cases where a format cannot be played via <audio>)
         return await this.playWithBuffer(file, opts);
       }
     }
+
     return await this.playWithBuffer(file, opts);
   }
 
@@ -243,13 +272,18 @@ export class AudioEngine {
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
+
     const gain = ctx.createGain();
     gain.gain.value = 0;
 
     const loop = !!opts.loop;
     source.loop = loop;
 
-    const trim = typeof opts.loopEndTrimSeconds === "number" ? Math.max(0, opts.loopEndTrimSeconds) : 0;
+    const trim =
+      typeof opts.loopEndTrimSeconds === "number"
+        ? Math.max(0, opts.loopEndTrimSeconds)
+        : 0;
+
     if (loop && trim > 0) {
       source.loopStart = 0;
       const loopEnd = Math.max(0.001, buffer.duration - trim);
@@ -260,8 +294,8 @@ export class AudioEngine {
     source.connect(gain);
 
     const now = ctx.currentTime;
-    const targetVol = Math.max(0, Math.min(1, opts.volume ?? 1));
-    const fadeIn = (opts.fadeInMs ?? 0) / 1000;
+    const targetVol = this.clamp01(opts.volume ?? 1);
+    const fadeIn = Math.max(0, opts.fadeInMs ?? 0) / 1000;
 
     if (fadeIn > 0) {
       gain.gain.setValueAtTime(0, now);
@@ -282,6 +316,7 @@ export class AudioEngine {
       startTime: now,
       offset: 0,
       lastVolume: targetVol,
+      loopEndTrimSeconds: trim,
     };
     this.playing.set(id, rec);
 
@@ -327,8 +362,8 @@ export class AudioEngine {
     gain.connect(this.masterGain!);
 
     const now = ctx.currentTime;
-    const targetVol = Math.max(0, Math.min(1, opts.volume ?? 1));
-    const fadeIn = (opts.fadeInMs ?? 0) / 1000;
+    const targetVol = this.clamp01(opts.volume ?? 1);
+    const fadeIn = Math.max(0, opts.fadeInMs ?? 0) / 1000;
 
     if (fadeIn > 0) {
       gain.gain.setValueAtTime(0, now);
@@ -369,7 +404,121 @@ export class AudioEngine {
     rec.endedHandler = endedHandler;
     element.addEventListener("ended", endedHandler);
 
-    await element.play();
+    try {
+      await element.play();
+    } catch (err) {
+      this.playing.delete(id);
+      this.cleanupMediaRecord(rec);
+      throw err;
+    }
+
+    this.emit({ type: "start", filePath: file.path, id });
+
+    return {
+      id,
+      stop: (sOpts?: StopOptions) => this.stopById(id, sOpts),
+    };
+  }
+
+  private async playWithDirectMediaElement(file: TFile, opts: PlayOptions = {}) {
+    const id = this.createId();
+    const element = document.createElement("audio");
+    element.preload = "auto";
+    element.src = this.app.vault.getResourcePath(file);
+
+    const loop = !!opts.loop;
+    const trim =
+      typeof opts.loopEndTrimSeconds === "number"
+        ? Math.max(0, opts.loopEndTrimSeconds)
+        : 0;
+
+    // Native loop works only when no loop-end trim is required.
+    element.loop = loop && trim <= 0;
+
+    const targetVol = this.clamp01(opts.volume ?? 1);
+    const fadeInMs = Math.max(0, opts.fadeInMs ?? 0);
+
+    const rec: DirectMediaPlaybackRecord = {
+      kind: "media-direct",
+      id,
+      element,
+      file,
+      loop,
+      state: "playing",
+      lastVolume: targetVol,
+      endedHandler: null,
+      timeUpdateHandler: null,
+      fadeTimer: null,
+      loopEndTrimSeconds: trim,
+    };
+
+    element.volume = fadeInMs > 0 ? 0 : this.toAppliedDirectVolume(targetVol);
+    this.playing.set(id, rec);
+
+    const endedHandler = () => {
+      const existing = this.playing.get(id);
+      if (!existing || existing.kind !== "media-direct") return;
+      if (existing.state !== "playing") return;
+
+      // Fallback loop restart when native loop is not used because of trim.
+      if (existing.loop && existing.loopEndTrimSeconds > 0) {
+        try {
+          existing.element.currentTime = 0;
+          void existing.element.play();
+          return;
+        } catch {
+          // Fall through to normal stop handling.
+        }
+      }
+
+      this.playing.delete(id);
+      this.cleanupDirectMediaRecord(existing);
+
+      this.emit({
+        type: "stop",
+        filePath: file.path,
+        id,
+        reason: "ended",
+      });
+    };
+    rec.endedHandler = endedHandler;
+    element.addEventListener("ended", endedHandler);
+
+    if (loop && trim > 0) {
+      const timeUpdateHandler = () => {
+        if (rec.state !== "playing") return;
+
+        const dur = rec.element.duration;
+        if (!Number.isFinite(dur) || dur <= trim || trim <= 0) return;
+
+        const restartAt = dur - trim;
+        if (rec.element.currentTime >= restartAt) {
+          try {
+            rec.element.currentTime = 0;
+            if (rec.element.paused) {
+              void rec.element.play();
+            }
+          } catch {
+            // Ignore seek/play failures here and let ended handling deal with it.
+          }
+        }
+      };
+
+      rec.timeUpdateHandler = timeUpdateHandler;
+      element.addEventListener("timeupdate", timeUpdateHandler);
+    }
+
+    try {
+      await element.play();
+    } catch (err) {
+      this.playing.delete(id);
+      this.cleanupDirectMediaRecord(rec);
+      throw err;
+    }
+
+    if (fadeInMs > 0) {
+      this.animateDirectRecordToRaw(rec, targetVol, fadeInMs);
+    }
 
     this.emit({ type: "start", filePath: file.path, id });
 
@@ -394,8 +543,11 @@ export class AudioEngine {
   }
 
   async preload(files: TFile[]) {
+    if (this.iosLockscreenCompatibilityMode) {
+      return;
+    }
+
     for (const f of files) {
-      // Large files are streamed via <audio>, so decoding them here would defeat the purpose.
       if (this.isLargeFile(f)) continue;
 
       try {
@@ -411,20 +563,41 @@ export class AudioEngine {
    * If fadeOutMs > 0, a short fade-out is applied before pausing.
    */
   async pauseByFile(file: TFile, fadeOutMs = 0) {
-    if (!this.ctx) return;
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path && p.state === "playing",
     );
     if (!targets.length) return;
 
-    const ctx = this.ctx;
-    const fadeSec = (fadeOutMs ?? 0) / 1000;
+    const fadeMs = Math.max(0, fadeOutMs);
 
     await Promise.all(
       targets.map(
         (rec) =>
           new Promise<void>((resolve) => {
-            if (!ctx) {
+            if (rec.kind === "media-direct") {
+              if (fadeMs > 0) {
+                this.animateDirectRecordToRaw(rec, 0, fadeMs, () => {
+                  this.pauseRecord(rec);
+                  this.emit({
+                    type: "pause",
+                    filePath: rec.file.path,
+                    id: rec.id,
+                  });
+                  resolve();
+                });
+              } else {
+                this.pauseRecord(rec);
+                this.emit({
+                  type: "pause",
+                  filePath: rec.file.path,
+                  id: rec.id,
+                });
+                resolve();
+              }
+              return;
+            }
+
+            if (!this.ctx) {
               this.pauseRecord(rec);
               this.emit({
                 type: "pause",
@@ -435,8 +608,10 @@ export class AudioEngine {
               return;
             }
 
+            const fadeSec = fadeMs / 1000;
+
             if (fadeSec > 0) {
-              const n = ctx.currentTime;
+              const n = this.ctx.currentTime;
               const cur = rec.gain.gain.value;
               rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
 
@@ -452,7 +627,7 @@ export class AudioEngine {
                   id: rec.id,
                 });
                 resolve();
-              }, Math.max(1, fadeOutMs));
+              }, Math.max(1, fadeMs));
             } else {
               this.pauseRecord(rec);
               this.emit({
@@ -477,14 +652,34 @@ export class AudioEngine {
     );
     if (!targets.length) return;
 
-    await this.ensureContext();
-    const ctx = this.ctx!;
-    const fadeSec = (fadeInMs ?? 0) / 1000;
+    const fadeMs = Math.max(0, fadeInMs);
 
     for (const rec of targets) {
-      const now = ctx.currentTime;
       const target =
         rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+
+      if (rec.kind === "media-direct") {
+        this.resumeRecord(rec);
+
+        if (fadeMs > 0) {
+          rec.element.volume = 0;
+          this.animateDirectRecordToRaw(rec, target, fadeMs);
+        } else {
+          this.applyDirectElementVolume(rec, target);
+        }
+
+        this.emit({
+          type: "resume",
+          filePath: rec.file.path,
+          id: rec.id,
+        });
+        continue;
+      }
+
+      await this.ensureContext();
+      const ctx = this.ctx!;
+      const fadeSec = fadeMs / 1000;
+      const now = ctx.currentTime;
 
       if (fadeSec > 0) {
         rec.gain.gain.cancelScheduledValues(now);
@@ -510,16 +705,21 @@ export class AudioEngine {
    * This does not touch the global master gain.
    */
   setVolumeForPath(path: string, volume: number) {
-    if (!this.ctx) return;
-    const v = Math.max(0, Math.min(1, volume));
-    const now = this.ctx.currentTime;
+    const v = this.clamp01(volume);
 
     for (const rec of this.playing.values()) {
-      if (rec.file.path === path) {
-        rec.gain.gain.cancelScheduledValues(now);
-        rec.gain.gain.setValueAtTime(v, now);
-        rec.lastVolume = v;
+      if (rec.file.path !== path) continue;
+
+      if (rec.kind === "media-direct") {
+        this.setDirectRecordTargetVolume(rec, v);
+        continue;
       }
+
+      if (!this.ctx) continue;
+      const now = this.ctx.currentTime;
+      rec.gain.gain.cancelScheduledValues(now);
+      rec.gain.gain.setValueAtTime(v, now);
+      rec.lastVolume = v;
     }
   }
 
@@ -557,9 +757,14 @@ export class AudioEngine {
   }
 
   /**
-   * Called when the plugin unloads – closes the AudioContext and drops caches.
+   * Called when the plugin unloads.
    */
   shutdown() {
+    for (const rec of this.playing.values()) {
+      this.cleanupRecord(rec);
+    }
+    this.playing.clear();
+
     try {
       void this.ctx?.close();
     } catch {
@@ -568,13 +773,71 @@ export class AudioEngine {
     this.ctx = null;
     this.masterGain = null;
     this.clearBufferCache();
-    this.playing.clear();
   }
 
   // ===== Internal helpers =====
 
+  private clamp01(v: number): number {
+    return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+  }
+
   private createId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private toAppliedDirectVolume(rawVolume: number): number {
+    return this.clamp01(this.clamp01(rawVolume) * this.masterVolume);
+  }
+
+  private applyDirectElementVolume(rec: DirectMediaPlaybackRecord, rawVolume: number) {
+    rec.element.volume = this.toAppliedDirectVolume(rawVolume);
+  }
+
+  private setDirectRecordTargetVolume(rec: DirectMediaPlaybackRecord, rawVolume: number) {
+    rec.lastVolume = this.clamp01(rawVolume);
+    this.applyDirectElementVolume(rec, rec.lastVolume);
+  }
+
+  private cancelDirectFade(rec: DirectMediaPlaybackRecord) {
+    if (rec.fadeTimer != null) {
+      window.clearInterval(rec.fadeTimer);
+      rec.fadeTimer = null;
+    }
+  }
+
+  private animateDirectRecordToRaw(
+    rec: DirectMediaPlaybackRecord,
+    targetRawVolume: number,
+    durationMs: number,
+    done?: () => void,
+  ) {
+    this.cancelDirectFade(rec);
+
+    const totalMs = Math.max(0, durationMs);
+    if (totalMs <= 0) {
+      rec.element.volume = this.toAppliedDirectVolume(targetRawVolume);
+      done?.();
+      return;
+    }
+
+    const startApplied = this.clamp01(rec.element.volume);
+    const startedAt = window.performance.now();
+
+    const step = () => {
+	  const elapsed = window.performance.now() - startedAt;
+      const t = Math.min(1, elapsed / totalMs);
+      const targetApplied = this.toAppliedDirectVolume(targetRawVolume);
+      const next = startApplied + (targetApplied - startApplied) * t;
+      rec.element.volume = this.clamp01(next);
+
+      if (t >= 1) {
+        this.cancelDirectFade(rec);
+        done?.();
+      }
+    };
+
+    step();
+    rec.fadeTimer = window.setInterval(step, 33);
   }
 
   private stopById(id: string, sOpts?: StopOptions): Promise<void> {
@@ -583,11 +846,36 @@ export class AudioEngine {
 
     this.playing.delete(id);
 
-    const ctx = this.ctx;
-    const fadeOutMs = sOpts?.fadeOutMs ?? 0;
-    const fadeOut = fadeOutMs / 1000;
+    const fadeOutMs = Math.max(0, sOpts?.fadeOutMs ?? 0);
     const filePath = rec.file.path;
 
+    if (rec.kind === "media-direct") {
+      return new Promise<void>((resolve) => {
+        if (fadeOutMs > 0) {
+          this.animateDirectRecordToRaw(rec, 0, fadeOutMs, () => {
+            this.cleanupRecord(rec);
+            this.emit({
+              type: "stop",
+              filePath,
+              id,
+              reason: "stopped",
+            });
+            resolve();
+          });
+        } else {
+          this.cleanupRecord(rec);
+          this.emit({
+            type: "stop",
+            filePath,
+            id,
+            reason: "stopped",
+          });
+          resolve();
+        }
+      });
+    }
+
+    const ctx = this.ctx;
     if (!ctx) {
       this.cleanupRecord(rec);
       this.emit({
@@ -598,6 +886,8 @@ export class AudioEngine {
       });
       return Promise.resolve();
     }
+
+    const fadeOut = fadeOutMs / 1000;
 
     return new Promise<void>((resolve) => {
       const n = ctx.currentTime;
@@ -636,15 +926,23 @@ export class AudioEngine {
       try {
         rec.source?.stop();
       } catch {
-        // Ignore errors when stopping an already-stopped source
+        // Ignore errors when stopping an already-stopped source.
       }
       rec.source = null;
+      try {
+        rec.gain.disconnect();
+      } catch {
+        // Ignore disconnect errors.
+      }
       return;
     }
 
     if (rec.kind === "media") {
       this.cleanupMediaRecord(rec);
+      return;
     }
+
+    this.cleanupDirectMediaRecord(rec);
   }
 
   private cleanupMediaRecord(rec: MediaPlaybackRecord) {
@@ -653,45 +951,78 @@ export class AudioEngine {
         rec.element.removeEventListener("ended", rec.endedHandler);
       }
     } catch {
-      // ignore
+      // Ignore listener cleanup errors.
     }
     rec.endedHandler = null;
 
     try {
       rec.element.pause();
     } catch {
-      // ignore
+      // Ignore pause errors.
     }
 
     try {
       rec.node.disconnect();
     } catch {
-      // ignore
+      // Ignore disconnect errors.
     }
 
     try {
       rec.gain.disconnect();
     } catch {
-      // ignore
+      // Ignore disconnect errors.
     }
 
     try {
       rec.element.removeAttribute("src");
       rec.element.load();
     } catch {
-      // ignore
+      // Ignore reset errors.
+    }
+  }
+
+  private cleanupDirectMediaRecord(rec: DirectMediaPlaybackRecord) {
+    this.cancelDirectFade(rec);
+
+    try {
+      if (rec.endedHandler) {
+        rec.element.removeEventListener("ended", rec.endedHandler);
+      }
+    } catch {
+      // Ignore listener cleanup errors.
+    }
+    rec.endedHandler = null;
+
+    try {
+      if (rec.timeUpdateHandler) {
+        rec.element.removeEventListener("timeupdate", rec.timeUpdateHandler);
+      }
+    } catch {
+      // Ignore listener cleanup errors.
+    }
+    rec.timeUpdateHandler = null;
+
+    try {
+      rec.element.pause();
+    } catch {
+      // Ignore pause errors.
+    }
+
+    try {
+      rec.element.removeAttribute("src");
+      rec.element.load();
+    } catch {
+      // Ignore reset errors.
     }
   }
 
   private pauseRecord(rec: PlaybackRecord) {
-    if (!this.ctx) return;
     if (rec.state !== "playing") return;
 
     if (rec.kind === "buffer") {
-      if (!rec.source) return;
+      if (!this.ctx || !rec.source) return;
 
-      const ctx = this.ctx;
-      const elapsed = Math.max(0, ctx.currentTime - rec.startTime);
+      const elapsed = Math.max(0, this.ctx.currentTime - rec.startTime);
       const newOffset = rec.offset + elapsed;
 
       rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
@@ -700,7 +1031,7 @@ export class AudioEngine {
       try {
         rec.source.stop();
       } catch {
-        // Ignore errors if already stopped
+        // Ignore errors if already stopped.
       }
       rec.source = null;
       return;
@@ -710,31 +1041,42 @@ export class AudioEngine {
       try {
         rec.element.pause();
       } catch {
-        // ignore
+        // Ignore pause errors.
       }
       rec.state = "paused";
+      return;
     }
+
+    this.cancelDirectFade(rec);
+    try {
+      rec.element.pause();
+    } catch {
+      // Ignore pause errors.
+    }
+    rec.state = "paused";
   }
 
   private resumeRecord(rec: PlaybackRecord) {
-    if (!this.ctx) return;
     if (rec.state !== "paused") return;
 
     if (rec.kind === "buffer") {
-      const ctx = this.ctx;
-      const buffer = rec.buffer;
-      if (!buffer) return;
+      if (!this.ctx) return;
 
-      // Clamp offset near the end of the buffer
+      const buffer = rec.buffer;
       const maxOffset = Math.max(0, buffer.duration - 0.001);
       const offset = Math.max(0, Math.min(rec.offset, maxOffset));
 
-      const source = ctx.createBufferSource();
+      const source = this.ctx.createBufferSource();
       source.buffer = buffer;
       source.loop = rec.loop;
 
-      const gain = rec.gain;
-      source.connect(gain);
+      if (rec.loop && rec.loopEndTrimSeconds > 0) {
+        source.loopStart = 0;
+        const loopEnd = Math.max(0.001, buffer.duration - rec.loopEndTrimSeconds);
+        source.loopEnd = Math.max(source.loopStart + 0.001, loopEnd);
+      }
+
+      source.connect(rec.gain);
 
       const id = rec.id;
 
@@ -754,7 +1096,7 @@ export class AudioEngine {
 
       rec.source = source;
       rec.state = "playing";
-      rec.startTime = ctx.currentTime;
+      rec.startTime = this.ctx.currentTime;
 
       source.start(0, offset);
       return;
@@ -765,8 +1107,16 @@ export class AudioEngine {
       try {
         void rec.element.play();
       } catch {
-        // ignore
+        // Ignore play errors.
       }
+      return;
+    }
+
+    rec.state = "playing";
+    try {
+      void rec.element.play();
+    } catch {
+      // Ignore play errors.
     }
   }
 
@@ -789,7 +1139,6 @@ export class AudioEngine {
     }
     if (this.totalBufferedBytes <= this.maxCachedBytes) return;
 
-    // Evict least-recently-used entries until we are under the limit.
     for (const key of this.buffers.keys()) {
       if (this.totalBufferedBytes <= this.maxCachedBytes) break;
       const size = this.bufferUsage.get(key) ?? 0;

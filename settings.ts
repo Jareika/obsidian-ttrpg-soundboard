@@ -36,6 +36,7 @@ export interface SoundboardSettings {
   noteIconSizePx: number; // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
   maxAudioCacheMB: number; // upper limit for decoded-audio cache in MB (0 = no caching)
+  iosLockscreenCompatibilityMode: boolean; // force direct HTML audio playback without Web Audio routing
 
   thumbnailFolderEnabled: boolean; // if enabled, thumbnails are looked up in a dedicated folder
   thumbnailFolderPath: string; // vault path to the thumbnail folder
@@ -67,6 +68,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   noteIconSizePx: 40,
   toolbarFourFolders: false,
   maxAudioCacheMB: 512, // default 512 MB of decoded audio
+  iosLockscreenCompatibilityMode: false,
 
   thumbnailFolderEnabled: false,
   thumbnailFolderPath: "",
@@ -101,7 +103,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
       buttonBorder: "",
       buttonColor: "",
     },
-  },  
+  },
 };
 
 export class SoundboardSettingTab extends PluginSettingTab {
@@ -231,9 +233,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
             void this.plugin.saveSettings();
           }),
       );
-	  
+
     new Setting(containerEl)
-      .setName("Threshold for faster large‑file audio playback (mb)")
+      .setName("Threshold for faster large-file audio playback (mb)")
       .setDesc(
         "Files larger than this threshold are played via the htmlaudioelement for faster startup without full decoding. Set to 0 to disable.",
       )
@@ -250,7 +252,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Decoded audio cache.")
+      .setName("Decoded audio cache")
       .setDesc(
         "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal random access memory, more decoding).",
       )
@@ -266,9 +268,24 @@ export class SoundboardSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName("Ipad/iphone lock-screen compatibility mode")
+      .setDesc(
+        "This can help if sounds become silent after screen lock. Applies to newly started sounds.",
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.iosLockscreenCompatibilityMode)
+          .onChange((v) => {
+            this.plugin.settings.iosLockscreenCompatibilityMode = v;
+            this.plugin.engine?.setIOSLockscreenCompatibilityMode(v);
+            void this.plugin.saveSettings();
+          }),
+      );
+
     // Appearance
     new Setting(containerEl).setName("Appearance").setHeading();
-	
+
     new Setting(containerEl)
       .setName("Soundboard style")
       .setDesc("Configure card/tile/button colors for sounds, ambience and playlists.")
@@ -307,7 +324,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.refreshViews();
           }),
       );
-	  
+
     // Arrangement
     new Setting(containerEl).setName("Arrangement").setHeading();
 
@@ -372,7 +389,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
       for (const folderPath of topFolders) {
         const label = makeLabel(folderPath);
         const map = this.plugin.settings.folderViewModes ?? {};
-        const override = map[folderPath]; // "grid" | "simple" | undefined
+        const override = map[folderPath];
 
         const setting = new Setting(containerEl).setName(label).setDesc(folderPath);
 
