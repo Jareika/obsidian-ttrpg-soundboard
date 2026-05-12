@@ -20,7 +20,7 @@
     "eslint": "^9.39.2",
     "eslint-plugin-obsidianmd": "^0.1.9",
     "globals": "^16.5.0",
-    "obsidian": "^1.6.3",
+    "obsidian": "^1.7.2",
     "tslib": "^2.6.3",
     "typescript": "^5.4.5"
   },
