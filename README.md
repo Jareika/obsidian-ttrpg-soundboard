@@ -1,4 +1,4 @@
-# TTRPG Soundboard (Obsidian Plugin)
+# TTRPG Tools: Soundboard (Obsidian Plugin)
 
 A soundboard plugin for Obsidian designed for TTRPG sessions: play sound effects, music and ambience quickly from a folder-based library. Supports multiple simultaneous sounds, per-sound settings, playlists, and note buttons.
 
