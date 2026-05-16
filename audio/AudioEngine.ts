@@ -349,7 +349,7 @@ export class AudioEngine {
     const ctx = this.ctx!;
     const id = this.createId();
 
-    const element = document.createElement("audio");
+    const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
     element.src = this.app.vault.getResourcePath(file);
     element.loop = !!opts.loop;
@@ -422,7 +422,7 @@ export class AudioEngine {
 
   private async playWithDirectMediaElement(file: TFile, opts: PlayOptions = {}) {
     const id = this.createId();
-    const element = document.createElement("audio");
+    const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
     element.src = this.app.vault.getResourcePath(file);
 

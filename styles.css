@@ -1,13 +1,14 @@
 :root {
   --ttrpg-tile-height: 100px;
   --ttrpg-grid-gap: 16px;
+  --ttrpg-tile-aspect-ratio: 16 / 9;
   --ttrpg-playlist-accent: #d4af37; /* golden yellow */
   --ttrpg-note-icon-size: 40px; /* default size for note button images */
 }
 
-/* Root container for the view: remove extra top padding */
-.ttrpg-sb-view {
-  padding-top: 0 !important;
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view {
+  padding-top: 0;
 }
 
 /* Sticky toolbar at the top */
@@ -159,6 +160,11 @@
   background-repeat: no-repeat;
   border: 1px solid var(--ttrpg-sb-tile-border, var(--background-modifier-border));
   cursor: pointer;
+}
+
+.ttrpg-sb-use-tile-aspect-ratio .ttrpg-sb-tile {
+  height: auto;
+  aspect-ratio: var(--ttrpg-tile-aspect-ratio, 16 / 9);
 }
 
 .ttrpg-sb-tile:hover {
@@ -444,47 +450,57 @@ body.is-tablet .ttrpg-sb-now-controls .ttrpg-sb-inline-volume {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 60%, transparent);
 }
 
-.ttrpg-sb-stop.ttrpg-sb-note-thumb,
-.ttrpg-sb-stop.ttrpg-sb-note-thumb:hover,
-.ttrpg-sb-stop.ttrpg-sb-note-thumb:active,
-.ttrpg-sb-stop.ttrpg-sb-note-thumb:focus {
+.markdown-rendered button.ttrpg-sb-stop.ttrpg-sb-note-thumb,
+.markdown-rendered button.ttrpg-sb-stop.ttrpg-sb-note-thumb:hover,
+.markdown-rendered button.ttrpg-sb-stop.ttrpg-sb-note-thumb:active,
+.markdown-rendered button.ttrpg-sb-stop.ttrpg-sb-note-thumb:focus {
   padding: 0;
   border: none;
-  background: transparent !important;
-  box-shadow: none !important;
-  outline: none !important;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
-.ttrpg-sb-view .ttrpg-sb-icon-btn,
-.ttrpg-sb-view .ttrpg-sb-stop,
-.ttrpg-sb-view .ttrpg-sb-stop-all {
-  box-sizing: border-box !important;
-  height: 28px !important;
-  min-height: 28px !important;
-  max-height: 28px !important;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-  margin: 0 !important;
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all {
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin: 0;
   -webkit-appearance: none;
   appearance: none;
 }
 
-.ttrpg-sb-view .ttrpg-sb-stop,
-.ttrpg-sb-view .ttrpg-sb-stop-all {
-  line-height: 28px !important;
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+.workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+.workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all {
+  line-height: 28px;
 }
 
 @media (max-width: 1024px) {
-  .ttrpg-sb-view .ttrpg-sb-icon-btn,
-  .ttrpg-sb-view .ttrpg-sb-stop,
-  .ttrpg-sb-view .ttrpg-sb-stop-all {
-    height: 24px !important;
-    min-height: 24px !important;
-    max-height: 24px !important;
+  .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all {
+    height: 24px;
+    min-height: 24px;
+    max-height: 24px;
   }
 
-  .ttrpg-sb-view .ttrpg-sb-stop,
-  .ttrpg-sb-view .ttrpg-sb-stop-all {
-    line-height: 24px !important;
+  .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop,
+  .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-stop-all {
+    line-height: 24px;
   }
 }

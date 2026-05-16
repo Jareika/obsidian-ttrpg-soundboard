@@ -1,32 +1,38 @@
-/* TTRPG Soundboard – mobile icon fix: compact buttons + visible SVGs */
+/* TTRPG Soundboard – mobile icon fallback */
 
-/* Allow the button row to wrap on narrow screens */
-body.is-mobile .ttrpg-sb-btnrow,
-body.is-phone .ttrpg-sb-btnrow,
-body.is-tablet .ttrpg-sb-btnrow {
+/* Allow button rows to wrap on narrow layouts */
+body.is-mobile .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-btnrow,
+body.is-phone .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-btnrow,
+body.is-tablet .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-btnrow {
   flex-wrap: wrap;
   gap: 6px;
 }
 
-/* Icon buttons: narrow, fixed height, width controlled via width */
-body.is-mobile .ttrpg-sb-icon-btn,
-body.is-phone .ttrpg-sb-icon-btn,
-body.is-tablet .ttrpg-sb-icon-btn {
+/* Keep icon buttons compact and width-controlled */
+body.is-mobile .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+body.is-phone .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+body.is-tablet .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+body.is-mobile .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+body.is-phone .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn,
+body.is-tablet .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 35px;     /* adjust to make buttons narrower or wider */
-  height: 28px;    /* button height */
+  width: 35px;
+  height: 28px;
   padding: 0;
   box-sizing: border-box;
-  flex: 0 0 auto;  /* important: lets width take effect instead of fixed 28px */
+  flex: 0 0 auto;
 }
 
-/* SVG size: make the icon clearly visible and centered */
-body.is-mobile .ttrpg-sb-icon-btn svg,
-body.is-phone .ttrpg-sb-icon-btn svg,
-body.is-tablet .ttrpg-sb-icon-btn svg {
-  width: 18px !important;   /* icon size */
-  height: 18px !important;
-  display: block;           /* remove extra inline spacing */
+/* Keep SVG icons visible and centered */
+body.is-mobile .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg,
+body.is-phone .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg,
+body.is-tablet .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg,
+body.is-mobile .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg,
+body.is-phone .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg,
+body.is-tablet .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view .ttrpg-sb-icon-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }

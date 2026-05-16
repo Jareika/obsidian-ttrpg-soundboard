@@ -286,18 +286,57 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   }
 
   // ===== CSS helper =====
+  
+  private getStyleDocuments(): Document[] {
+    const docs = new Set<Document>();
+    docs.add(window.activeDocument);
+
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const doc = leaf.view.containerEl.doc;
+      if (doc) docs.add(doc);
+    });
+
+    return [...docs];
+  }
+  
+  private getTileAspectRatioValue(preset: string): string {
+    if (preset === "16:9") return "16 / 9";
+    if (preset === "3:2") return "3 / 2";
+    if (preset === "4:3") return "4 / 3";
+    if (preset === "1:1") return "1 / 1";
+    if (preset === "21:9") return "21 / 9";
+    return "16 / 9";
+  }
 
   applyCssVars() {
+	const docs = this.getStyleDocuments();
     const h = Math.max(30, Math.min(400, Number(this.settings.tileHeightPx ?? 100)));
-    document.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
+    for (const doc of docs) {
+      doc.documentElement.style.setProperty("--ttrpg-tile-height", `${h}px`);
+    }
 
     const iconSize = Math.max(12, Math.min(200, Number(this.settings.noteIconSizePx ?? 40)));
-    document.documentElement.style.setProperty("--ttrpg-note-icon-size", `${iconSize}px`);
+    for (const doc of docs) {
+      doc.documentElement.style.setProperty("--ttrpg-note-icon-size", `${iconSize}px`);
+    }
+	
+    const aspectRatio = this.getTileAspectRatioValue(this.settings.tileAspectRatioPreset);
+    const useAspectRatio = this.settings.tileSizingMode === "aspect-ratio";
+
+    for (const doc of docs) {
+      doc.documentElement.style.setProperty("--ttrpg-tile-aspect-ratio", aspectRatio);
+      doc.documentElement.toggleClass(
+        "ttrpg-sb-use-tile-aspect-ratio",
+        useAspectRatio,
+      );
+    }
 
     const setOrRemove = (name: string, value: string | undefined) => {
       const v = (value ?? "").trim();
-      if (!v) document.documentElement.style.removeProperty(name);
-      else document.documentElement.style.setProperty(name, v);
+      for (const doc of docs) {
+        if (!v) doc.documentElement.style.removeProperty(name);
+        else doc.documentElement.style.setProperty(name, v);
+      }
     };
 
     const st = this.settings.style;
@@ -1201,6 +1240,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
    * into clickable buttons that trigger playback.
    */
   private processNoteButtons(root: HTMLElement) {
+	const doc = root.doc ?? window.activeDocument;
     const anchors = root.querySelectorAll<HTMLAnchorElement>(
       'a[href^="ttrpg-sound:"], a[href^="ttrpg-playlist:"]',
     );
@@ -1215,7 +1255,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         const raw = hrefAttr.slice("ttrpg-sound:".length);
         const path = raw.replace(/^\/+/, "");
 
-        const button = document.createElement("button");
+        const button = doc.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
 
@@ -1223,7 +1263,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         if (thumbPath) {
           const af = this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof TFile) {
-            const img = document.createElement("img");
+            const img = doc.createElement("img");
             img.src = this.app.vault.getResourcePath(af);
             img.alt = label;
             button.appendChild(img);
@@ -1249,7 +1289,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
         const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
-        const button = document.createElement("button");
+        const button = doc.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.playlistPath = playlistPath;
         if (rangeSpec) {
@@ -1271,7 +1311,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const pattern =
       /\[([^\]]+)\]\((ttrpg-sound|ttrpg-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
 
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodeFilter = doc.defaultView?.NodeFilter ?? NodeFilter;
+    const walker = doc.createTreeWalker(root, nodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) {
@@ -1290,7 +1331,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
       const original = textNode.nodeValue ?? "";
       let lastIndex = 0;
-      const frag = document.createDocumentFragment();
+      const frag = doc.createDocumentFragment();
 
       pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
@@ -1299,12 +1340,12 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         const [full, label, kind, rawPath, thumbPathRaw] = match;
         const before = original.slice(lastIndex, match.index);
         if (before) {
-          frag.appendChild(document.createTextNode(before));
+          frag.appendChild(doc.createTextNode(before));
         }
 
         if (kind === "ttrpg-sound") {
           const path = rawPath.replace(/^\/+/, "");
-          const button = document.createElement("button");
+          const button = doc.createElement("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.path = path;
 
@@ -1312,7 +1353,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           if (thumbPath) {
             const af = this.app.vault.getAbstractFileByPath(thumbPath);
             if (af instanceof TFile) {
-              const img = document.createElement("img");
+              const img = doc.createElement("img");
               img.src = this.app.vault.getResourcePath(af);
               img.alt = label;
               button.appendChild(img);
@@ -1337,7 +1378,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
-          const button = document.createElement("button");
+          const button = doc.createElement("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.playlistPath = playlistPath;
           if (rangeSpec) {
@@ -1360,7 +1401,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
       const after = original.slice(lastIndex);
       if (after) {
-        frag.appendChild(document.createTextNode(after));
+        frag.appendChild(doc.createTextNode(after));
       }
 
       parent.replaceChild(frag, textNode);

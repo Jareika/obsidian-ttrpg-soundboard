@@ -19,6 +19,8 @@ export interface SoundboardStyleSettings {
 
 export type ArrangementGroup = "sounds" | "ambience" | "playlists";
 
+export type TileSizingMode = "fixed-height" | "aspect-ratio";
+
 export interface SoundboardSettings {
   rootFolder: string; // e.g. "Soundbar"
   includeRootFiles: boolean; // false = only subfolders
@@ -32,6 +34,8 @@ export interface SoundboardSettings {
   ambienceVolume: number; // global ambience multiplier 0..1
   simpleView: boolean; // global default: true = simple list
   folderViewModes: Record<string, "grid" | "simple">; // folderPath -> mode
+  tileSizingMode: TileSizingMode; // fixed height or aspect ratio based sizing
+  tileAspectRatioPreset: string; // e.g. "16:9"
   tileHeightPx: number; // tile height in px
   noteIconSizePx: number; // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
@@ -64,6 +68,8 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   ambienceVolume: 1,
   simpleView: false,
   folderViewModes: {},
+  tileSizingMode: "fixed-height",
+  tileAspectRatioPreset: "16:9",
   tileHeightPx: 100,
   noteIconSizePx: 40,
   toolbarFourFolders: false,
@@ -412,8 +418,46 @@ export class SoundboardSettingTab extends PluginSettingTab {
         });
       }
     }
-
+	
     new Setting(containerEl)
+      .setName("Tile sizing mode")
+      .setDesc("Choose whether grid tiles use a fixed height or a fixed aspect ratio.")
+      .addDropdown((dd) => {
+        dd.addOption("fixed-height", "Fixed height");
+        dd.addOption("aspect-ratio", "Aspect ratio");
+        dd.setValue(this.plugin.settings.tileSizingMode);
+        dd.onChange((val) => {
+          if (val === "fixed-height" || val === "aspect-ratio") {
+            this.plugin.settings.tileSizingMode = val;
+            this.plugin.applyCssVars();
+            void this.plugin.saveSettings();
+            this.plugin.refreshViews();
+            this.display();
+          }
+        });
+      });
+
+    const ratioSetting = new Setting(containerEl)
+      .setName("Tile aspect ratio")
+      .setDesc("Used only when tile sizing mode is set to aspect ratio. Images still fill the tile and may crop slightly.")
+      .addDropdown((dd) => {
+        dd.addOption("16:9", "16:9");
+        dd.addOption("3:2", "3:2");
+        dd.addOption("4:3", "4:3");
+        dd.addOption("1:1", "1:1");
+        dd.addOption("21:9", "21:9");
+        dd.setValue(this.plugin.settings.tileAspectRatioPreset);
+        dd.onChange((val) => {
+          this.plugin.settings.tileAspectRatioPreset = val;
+          this.plugin.applyCssVars();
+          void this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        });
+      });
+
+    ratioSetting.setDisabled(this.plugin.settings.tileSizingMode !== "aspect-ratio");
+
+    const tileHeightSetting = new Setting(containerEl)
       .setName("Tile height (px)")
       .setDesc("Adjust thumbnail tile height for the grid.")
       .addSlider((s) =>
@@ -424,8 +468,11 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.settings.tileHeightPx = v;
             this.plugin.applyCssVars();
             void this.plugin.saveSettings();
+			this.plugin.refreshViews();
           }),
       );
+	  
+    tileHeightSetting.setDisabled(this.plugin.settings.tileSizingMode !== "fixed-height");
 
     new Setting(containerEl)
       .setName("Note button icon size (px)")

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ttrpg-soundboard",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Soundboard plugin designed for Tabletop RPGs",
   "main": "main.js",
   "scripts": {
@@ -16,7 +16,7 @@
     "@typescript-eslint/eslint-plugin": "^8.48.1",
     "@typescript-eslint/parser": "^8.48.1",
     "bestzip": "^2.2.1",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.28.0",
     "eslint": "^9.39.2",
     "eslint-plugin-obsidianmd": "^0.1.9",
     "globals": "^16.5.0",
