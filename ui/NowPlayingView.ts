@@ -1,5 +1,6 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, setIcon, TFile, WorkspaceLeaf } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
+import type { PlaylistInfo } from "../util/fileDiscovery";
 
 export const VIEW_TYPE_TTRPG_NOWPLAYING = "ttrpg-soundboard-nowplaying";
 
@@ -79,7 +80,7 @@ export default class NowPlayingView extends ItemView {
     const isPaused = state === "paused";
 
     const activePlaylistPath = this.plugin.getActivePlaylistPathForTrackPath(path);
-	const isAmbience = this.plugin.isAmbiencePath(path);
+    const isAmbience = this.plugin.isAmbiencePath(path);
 
     const card = grid.createDiv({ cls: "ttrpg-sb-now-card" });
     if (isPaused) card.addClass("paused");
@@ -90,6 +91,23 @@ export default class NowPlayingView extends ItemView {
 
     const controls = card.createDiv({ cls: "ttrpg-sb-now-controls" });
 
+    if (activePlaylistPath) {
+      const playlist = this.findPlaylistByPath(activePlaylistPath);
+      if (playlist) {
+        this.renderPlaylistControls(controls, playlist, activePlaylistPath, file, isPaused);
+        return;
+      }
+    }
+
+    this.renderSingleControls(controls, file, path, isPaused);
+  }
+
+  private renderSingleControls(
+    controls: HTMLElement,
+    file: TFile | null,
+    path: string,
+    isPaused: boolean,
+  ) {
     const stopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-stop playing",
       text: "Stop",
@@ -121,24 +139,103 @@ export default class NowPlayingView extends ItemView {
     volSlider.max = "1";
     volSlider.step = "0.01";
 
-    if (activePlaylistPath) {
-      const pref = this.plugin.getPlaylistPref(activePlaylistPath);
-      volSlider.value = String(pref.volume ?? 1);
+    const pref = this.plugin.getSoundPref(path);
+    volSlider.value = String(pref.volume ?? 1);
 
-      volSlider.oninput = () => {
-        const v = Number(volSlider.value);
-        this.plugin.setPlaylistVolumeFromSlider(activePlaylistPath, v);
-      };
-    } else {
-      const pref = this.plugin.getSoundPref(path);
-      volSlider.value = String(pref.volume ?? 1);
+    this.plugin.registerVolumeSliderForPath(path, volSlider);
 
-      this.plugin.registerVolumeSliderForPath(path, volSlider);
+    volSlider.oninput = () => {
+      const v = Number(volSlider.value);
+      this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
+    };
+  }
 
-      volSlider.oninput = () => {
-        const v = Number(volSlider.value);
-        this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
-      };
+  private renderPlaylistControls(
+    controls: HTMLElement,
+    playlist: PlaylistInfo,
+    playlistPath: string,
+    file: TFile | null,
+    isPaused: boolean,
+  ) {
+    const prevBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Previous track",
+      },
+    });
+    setIcon(prevBtn, "skip-back");
+    prevBtn.onclick = async () => {
+      await this.plugin.prevInPlaylist(playlist);
+    };
+
+    const pauseBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": isPaused ? "Resume playlist" : "Pause playlist",
+      },
+    });
+    setIcon(pauseBtn, isPaused ? "play" : "pause");
+    pauseBtn.onclick = async () => {
+      if (!file) return;
+      if (isPaused) {
+        await this.plugin.engine.resumeByFile(file, this.plugin.settings.defaultFadeInMs);
+      } else {
+        await this.plugin.engine.pauseByFile(file, this.plugin.settings.defaultFadeOutMs);
+      }
+    };
+
+    const stopBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Stop playlist",
+      },
+    });
+    setIcon(stopBtn, "square");
+    stopBtn.onclick = async () => {
+      await this.plugin.stopPlaylist(playlistPath);
+    };
+
+    const nextBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Next track",
+      },
+    });
+    setIcon(nextBtn, "skip-forward");
+    nextBtn.onclick = async () => {
+      await this.plugin.nextInPlaylist(playlist);
+    };
+
+    const volSlider = controls.createEl("input", {
+      type: "range",
+      cls: "ttrpg-sb-inline-volume",
+    });
+    volSlider.min = "0";
+    volSlider.max = "1";
+    volSlider.step = "0.01";
+
+    const pref = this.plugin.getPlaylistPref(playlistPath);
+    volSlider.value = String(pref.volume ?? 1);
+
+    volSlider.oninput = () => {
+      const v = Number(volSlider.value);
+      this.plugin.setPlaylistVolumeFromSlider(playlistPath, v);
+    };
+  }
+
+  private findPlaylistByPath(playlistPath: string): PlaylistInfo | null {
+    for (const folder of this.plugin.library.topFolders) {
+      const content = this.plugin.library.byFolder[folder];
+      if (!content) continue;
+
+      const playlist = content.playlists.find((pl) => pl.path === playlistPath);
+      if (playlist) return playlist;
     }
+
+    return null;
   }
 }

@@ -1718,7 +1718,7 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     }
   }
   renderCard(grid, path) {
-    var _a, _b, _c, _d;
+    var _a, _b;
     const af = this.app.vault.getAbstractFileByPath(path);
     const file = af instanceof import_obsidian4.TFile ? af : null;
     const name = (_b = (_a = file == null ? void 0 : file.basename) != null ? _a : path.split("/").pop()) != null ? _b : path;
@@ -1732,6 +1732,17 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     else if (isAmbience) card.addClass("ambience");
     card.createDiv({ cls: "ttrpg-sb-now-title", text: name });
     const controls = card.createDiv({ cls: "ttrpg-sb-now-controls" });
+    if (activePlaylistPath) {
+      const playlist = this.findPlaylistByPath(activePlaylistPath);
+      if (playlist) {
+        this.renderPlaylistControls(controls, playlist, activePlaylistPath, file, isPaused);
+        return;
+      }
+    }
+    this.renderSingleControls(controls, file, path, isPaused);
+  }
+  renderSingleControls(controls, file, path, isPaused) {
+    var _a;
     const stopBtn = controls.createEl("button", {
       cls: "ttrpg-sb-stop playing",
       text: "Stop"
@@ -1760,22 +1771,87 @@ var NowPlayingView = class extends import_obsidian4.ItemView {
     volSlider.min = "0";
     volSlider.max = "1";
     volSlider.step = "0.01";
-    if (activePlaylistPath) {
-      const pref = this.plugin.getPlaylistPref(activePlaylistPath);
-      volSlider.value = String((_c = pref.volume) != null ? _c : 1);
-      volSlider.oninput = () => {
-        const v = Number(volSlider.value);
-        this.plugin.setPlaylistVolumeFromSlider(activePlaylistPath, v);
-      };
-    } else {
-      const pref = this.plugin.getSoundPref(path);
-      volSlider.value = String((_d = pref.volume) != null ? _d : 1);
-      this.plugin.registerVolumeSliderForPath(path, volSlider);
-      volSlider.oninput = () => {
-        const v = Number(volSlider.value);
-        this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
-      };
+    const pref = this.plugin.getSoundPref(path);
+    volSlider.value = String((_a = pref.volume) != null ? _a : 1);
+    this.plugin.registerVolumeSliderForPath(path, volSlider);
+    volSlider.oninput = () => {
+      const v = Number(volSlider.value);
+      this.plugin.setVolumeForPathFromSlider(path, v, volSlider);
+    };
+  }
+  renderPlaylistControls(controls, playlist, playlistPath, file, isPaused) {
+    var _a;
+    const prevBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Previous track"
+      }
+    });
+    (0, import_obsidian4.setIcon)(prevBtn, "skip-back");
+    prevBtn.onclick = async () => {
+      await this.plugin.prevInPlaylist(playlist);
+    };
+    const pauseBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": isPaused ? "Resume playlist" : "Pause playlist"
+      }
+    });
+    (0, import_obsidian4.setIcon)(pauseBtn, isPaused ? "play" : "pause");
+    pauseBtn.onclick = async () => {
+      if (!file) return;
+      if (isPaused) {
+        await this.plugin.engine.resumeByFile(file, this.plugin.settings.defaultFadeInMs);
+      } else {
+        await this.plugin.engine.pauseByFile(file, this.plugin.settings.defaultFadeOutMs);
+      }
+    };
+    const stopBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Stop playlist"
+      }
+    });
+    (0, import_obsidian4.setIcon)(stopBtn, "square");
+    stopBtn.onclick = async () => {
+      await this.plugin.stopPlaylist(playlistPath);
+    };
+    const nextBtn = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Next track"
+      }
+    });
+    (0, import_obsidian4.setIcon)(nextBtn, "skip-forward");
+    nextBtn.onclick = async () => {
+      await this.plugin.nextInPlaylist(playlist);
+    };
+    const volSlider = controls.createEl("input", {
+      type: "range",
+      cls: "ttrpg-sb-inline-volume"
+    });
+    volSlider.min = "0";
+    volSlider.max = "1";
+    volSlider.step = "0.01";
+    const pref = this.plugin.getPlaylistPref(playlistPath);
+    volSlider.value = String((_a = pref.volume) != null ? _a : 1);
+    volSlider.oninput = () => {
+      const v = Number(volSlider.value);
+      this.plugin.setPlaylistVolumeFromSlider(playlistPath, v);
+    };
+  }
+  findPlaylistByPath(playlistPath) {
+    for (const folder of this.plugin.library.topFolders) {
+      const content = this.plugin.library.byFolder[folder];
+      if (!content) continue;
+      const playlist = content.playlists.find((pl) => pl.path === playlistPath);
+      if (playlist) return playlist;
     }
+    return null;
   }
 };
 
