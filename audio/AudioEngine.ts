@@ -5,6 +5,7 @@ export interface PlayOptions {
   loop?: boolean;
   fadeInMs?: number;
   loopEndTrimSeconds?: number;
+  loopDelaySeconds?: number[];
 }
 
 export interface StopOptions {
@@ -42,6 +43,10 @@ interface PlaybackRecordBase {
   loop: boolean;
   state: "playing" | "paused";
   lastVolume: number; // target per-track volume before global master volume
+  fadeInMs: number;
+  loopDelaySeconds: number[];
+  loopDelayIndex: number;
+  loopTimer: number | null;
 }
 
 interface GainPlaybackRecordBase extends PlaybackRecordBase {
@@ -277,7 +282,8 @@ export class AudioEngine {
     gain.gain.value = 0;
 
     const loop = !!opts.loop;
-    source.loop = loop;
+    const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
+    source.loop = loop && loopDelaySeconds.length === 0;
 
     const trim =
       typeof opts.loopEndTrimSeconds === "number"
@@ -316,25 +322,23 @@ export class AudioEngine {
       startTime: now,
       offset: 0,
       lastVolume: targetVol,
+      fadeInMs: Math.max(0, opts.fadeInMs ?? 0),
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       loopEndTrimSeconds: trim,
     };
     this.playing.set(id, rec);
 
-    source.onended = () => {
-      const existing = this.playing.get(id);
-      if (!existing) return;
-      if (existing.state !== "playing") return;
+    this.attachBufferEndedHandler(rec, source);
 
-      this.playing.delete(id);
-      this.emit({
-        type: "stop",
-        filePath: file.path,
-        id,
-        reason: "ended",
-      });
-    };
+    const playDuration =
+      loop && loopDelaySeconds.length > 0 && trim > 0
+        ? Math.max(0.001, buffer.duration - trim)
+        : undefined;
 
-    source.start();
+    if (playDuration != null) source.start(0, 0, playDuration);
+    else source.start();
 
     this.emit({ type: "start", filePath: file.path, id });
 
@@ -352,7 +356,8 @@ export class AudioEngine {
     const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
     element.src = this.app.vault.getResourcePath(file);
-    element.loop = !!opts.loop;
+    const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
+    element.loop = !!opts.loop && loopDelaySeconds.length === 0;
 
     const node = ctx.createMediaElementSource(element);
     const gain = ctx.createGain();
@@ -382,6 +387,10 @@ export class AudioEngine {
       loop: !!opts.loop,
       state: "playing",
       lastVolume: targetVol,
+      fadeInMs: Math.max(0, opts.fadeInMs ?? 0),
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       endedHandler: null,
     };
     this.playing.set(id, rec);
@@ -390,6 +399,11 @@ export class AudioEngine {
       const existing = this.playing.get(id);
       if (!existing) return;
       if (existing.state !== "playing") return;
+	  
+      if (existing.kind === "media" && existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedMediaLoop(existing);
+        return;
+      }
 
       this.playing.delete(id);
       this.cleanupMediaRecord(rec);
@@ -427,13 +441,14 @@ export class AudioEngine {
     element.src = this.app.vault.getResourcePath(file);
 
     const loop = !!opts.loop;
+	const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
     const trim =
       typeof opts.loopEndTrimSeconds === "number"
         ? Math.max(0, opts.loopEndTrimSeconds)
         : 0;
 
     // Native loop works only when no loop-end trim is required.
-    element.loop = loop && trim <= 0;
+    element.loop = loop && trim <= 0 && loopDelaySeconds.length === 0;
 
     const targetVol = this.clamp01(opts.volume ?? 1);
     const fadeInMs = Math.max(0, opts.fadeInMs ?? 0);
@@ -446,6 +461,10 @@ export class AudioEngine {
       loop,
       state: "playing",
       lastVolume: targetVol,
+      fadeInMs,
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       endedHandler: null,
       timeUpdateHandler: null,
       fadeTimer: null,
@@ -459,6 +478,11 @@ export class AudioEngine {
       const existing = this.playing.get(id);
       if (!existing || existing.kind !== "media-direct") return;
       if (existing.state !== "playing") return;
+	  
+      if (existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedDirectMediaLoop(existing);
+        return;
+      }
 
       // Fallback loop restart when native loop is not used because of trim.
       if (existing.loop && existing.loopEndTrimSeconds > 0) {
@@ -484,7 +508,7 @@ export class AudioEngine {
     rec.endedHandler = endedHandler;
     element.addEventListener("ended", endedHandler);
 
-    if (loop && trim > 0) {
+    if (loop && trim > 0 && loopDelaySeconds.length === 0) {
       const timeUpdateHandler = () => {
         if (rec.state !== "playing") return;
 
@@ -784,6 +808,145 @@ export class AudioEngine {
   private createId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
+  
+  private normalizeLoopDelaySeconds(values: number[] | undefined): number[] {
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v >= 0);
+  }
+
+  private nextLoopDelayMs(rec: PlaybackRecord): number {
+    if (!rec.loopDelaySeconds.length) return 0;
+    const delay = rec.loopDelaySeconds[rec.loopDelayIndex % rec.loopDelaySeconds.length];
+    rec.loopDelayIndex++;
+    return Math.max(0, delay * 1000);
+  }
+
+  private cancelLoopTimer(rec: PlaybackRecord) {
+    if (rec.loopTimer != null) {
+      window.clearTimeout(rec.loopTimer);
+      rec.loopTimer = null;
+    }
+  }
+
+  private attachBufferEndedHandler(rec: BufferPlaybackRecord, source: AudioBufferSourceNode) {
+    source.onended = () => {
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "buffer") return;
+      if (existing.state !== "playing") return;
+
+      if (existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedBufferLoop(existing);
+        return;
+      }
+
+      this.playing.delete(existing.id);
+	  this.cleanupRecord(existing);
+	  
+      this.emit({
+        type: "stop",
+        filePath: existing.file.path,
+        id: existing.id,
+        reason: "ended",
+      });
+    };
+  }
+
+  private scheduleDelayedBufferLoop(rec: BufferPlaybackRecord) {
+    if (!this.ctx) return;
+
+    try {
+      rec.source?.disconnect();
+    } catch {
+      // Ignore disconnect errors for ended sources.
+    }
+
+    rec.source = null;
+
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+	  rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "buffer" || existing.state !== "playing") return;
+      if (!this.ctx) return;
+
+      const source = this.ctx.createBufferSource();
+      source.buffer = existing.buffer;
+      source.loop = false;
+      source.connect(existing.gain);
+      existing.source = source;
+      existing.startTime = this.ctx.currentTime;
+      existing.offset = 0;
+
+      const fadeSec = Math.max(0, existing.fadeInMs) / 1000;
+      existing.gain.gain.cancelScheduledValues(this.ctx.currentTime);
+      if (fadeSec > 0) {
+        existing.gain.gain.setValueAtTime(0, this.ctx.currentTime);
+        existing.gain.gain.linearRampToValueAtTime(existing.lastVolume, this.ctx.currentTime + fadeSec);
+      } else {
+        existing.gain.gain.setValueAtTime(existing.lastVolume, this.ctx.currentTime);
+      }
+
+      this.attachBufferEndedHandler(existing, source);
+      const playDuration =
+        existing.loopEndTrimSeconds > 0
+          ? Math.max(0.001, existing.buffer.duration - existing.loopEndTrimSeconds)
+          : undefined;
+
+      if (playDuration != null) source.start(0, 0, playDuration);
+      else source.start();
+    }, delayMs);
+  }
+
+  private scheduleDelayedMediaLoop(rec: MediaPlaybackRecord) {
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+      rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "media" || existing.state !== "playing") return;
+      if (!this.ctx) return;
+
+      const fadeSec = Math.max(0, existing.fadeInMs) / 1000;
+      const now = this.ctx.currentTime;
+      existing.gain.gain.cancelScheduledValues(now);
+      if (fadeSec > 0) {
+        existing.gain.gain.setValueAtTime(0, now);
+        existing.gain.gain.linearRampToValueAtTime(existing.lastVolume, now + fadeSec);
+      } else {
+        existing.gain.gain.setValueAtTime(existing.lastVolume, now);
+      }
+
+      try {
+        existing.element.currentTime = 0;
+        void existing.element.play();
+      } catch {
+        // Let normal media error/end handling deal with failures.
+      }
+    }, delayMs);
+  }
+
+  private scheduleDelayedDirectMediaLoop(rec: DirectMediaPlaybackRecord) {
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+	  rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "media-direct" || existing.state !== "playing") return;
+
+      try {
+        existing.element.currentTime = 0;
+        if (existing.fadeInMs > 0) {
+          existing.element.volume = 0;
+          this.animateDirectRecordToRaw(existing, existing.lastVolume, existing.fadeInMs);
+        } else {
+          this.applyDirectElementVolume(existing, existing.lastVolume);
+        }
+        void existing.element.play();
+      } catch {
+        // Ignore seek/play failures here.
+      }
+    }, delayMs);
+  }
 
   private toAppliedDirectVolume(rawVolume: number): number {
     return this.clamp01(this.clamp01(rawVolume) * this.masterVolume);
@@ -845,6 +1008,7 @@ export class AudioEngine {
     if (!rec) return Promise.resolve();
 
     this.playing.delete(id);
+	this.cancelLoopTimer(rec);
 
     const fadeOutMs = Math.max(0, sOpts?.fadeOutMs ?? 0);
     const filePath = rec.file.path;
@@ -922,6 +1086,8 @@ export class AudioEngine {
   }
 
   private cleanupRecord(rec: PlaybackRecord) {
+    this.cancelLoopTimer(rec);
+
     if (rec.kind === "buffer") {
       try {
         rec.source?.stop();
@@ -1018,9 +1184,17 @@ export class AudioEngine {
 
   private pauseRecord(rec: PlaybackRecord) {
     if (rec.state !== "playing") return;
+	
+	this.cancelLoopTimer(rec);
 
     if (rec.kind === "buffer") {
-      if (!this.ctx || !rec.source) return;
+      if (!this.ctx) return;
+
+      if (!rec.source) {
+        rec.state = "paused";
+        rec.offset = 0;
+        return;
+      }
 
       const elapsed = Math.max(0, this.ctx.currentTime - rec.startTime);
       const newOffset = rec.offset + elapsed;
@@ -1068,7 +1242,7 @@ export class AudioEngine {
 
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
-      source.loop = rec.loop;
+      source.loop = rec.loop && rec.loopDelaySeconds.length === 0;
 
       if (rec.loop && rec.loopEndTrimSeconds > 0) {
         source.loopStart = 0;
@@ -1078,33 +1252,27 @@ export class AudioEngine {
 
       source.connect(rec.gain);
 
-      const id = rec.id;
-
-      source.onended = () => {
-        const existing = this.playing.get(id);
-        if (!existing) return;
-        if (existing.state !== "playing") return;
-
-        this.playing.delete(id);
-        this.emit({
-          type: "stop",
-          filePath: existing.file.path,
-          id,
-          reason: "ended",
-        });
-      };
-
       rec.source = source;
       rec.state = "playing";
       rec.startTime = this.ctx.currentTime;
 
-      source.start(0, offset);
+      this.attachBufferEndedHandler(rec, source);
+
+      if (rec.loop && rec.loopDelaySeconds.length > 0 && rec.loopEndTrimSeconds > 0) {
+        const endAt = Math.max(0.001, buffer.duration - rec.loopEndTrimSeconds);
+        const safeOffset = Math.max(0, Math.min(offset, endAt - 0.001));
+        const duration = Math.max(0.001, endAt - safeOffset);
+        source.start(0, safeOffset, duration);
+      } else {
+        source.start(0, offset);
+      }
       return;
     }
 
     if (rec.kind === "media") {
       rec.state = "playing";
       try {
+		if (rec.element.ended) rec.element.currentTime = 0;
         void rec.element.play();
       } catch {
         // Ignore play errors.
@@ -1114,6 +1282,7 @@ export class AudioEngine {
 
     rec.state = "playing";
     try {
+	  if (rec.element.ended) rec.element.currentTime = 0;
       void rec.element.play();
     } catch {
       // Ignore play errors.

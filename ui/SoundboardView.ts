@@ -379,11 +379,10 @@ export default class SoundboardView extends ItemView {
 
     const pref = this.plugin.getSoundPref(file.path);
     const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
+	const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
 
     tile.onclick = async () => {
-      if (!this.plugin.settings.allowOverlap) {
-        await this.plugin.engine.stopByFile(file, 0);
-      }
+      await this.plugin.prepareBeforeStartingSingle(file);
       const baseVol = pref.volume ?? 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
 
@@ -392,6 +391,7 @@ export default class SoundboardView extends ItemView {
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
         loopEndTrimSeconds,
+		loopDelaySeconds,
       });
     };
 
@@ -469,11 +469,10 @@ export default class SoundboardView extends ItemView {
 
     const pref = this.plugin.getSoundPref(file.path);
     const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
+	const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
 
     main.onclick = async () => {
-      if (!this.plugin.settings.allowOverlap) {
-        await this.plugin.engine.stopByFile(file, 0);
-      }
+      await this.plugin.prepareBeforeStartingSingle(file);
       const baseVol = pref.volume ?? 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
 
@@ -482,6 +481,7 @@ export default class SoundboardView extends ItemView {
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: pref.fadeInMs ?? this.plugin.settings.defaultFadeInMs,
         loopEndTrimSeconds,
+		loopDelaySeconds,
       });
     };
 

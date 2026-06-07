@@ -29,6 +29,7 @@ export interface SoundboardSettings {
   defaultFadeInMs: number;
   defaultFadeOutMs: number;
   allowOverlap: boolean;
+  exclusivePlayback: boolean;
   masterVolume: number;
   mediaElementThresholdMB: number; // 0 disables MediaElement playback
   ambienceVolume: number; // global ambience multiplier 0..1
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   defaultFadeInMs: 3000,
   defaultFadeOutMs: 3000,
   allowOverlap: true,
+  exclusivePlayback: false,
   masterVolume: 1,
   mediaElementThresholdMB: 25,
   ambienceVolume: 1,
@@ -216,8 +218,10 @@ export class SoundboardSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Allow overlap")
-      .setDesc("Play multiple sounds at the same time.")
+      .setName("Allow retrigger overlap")
+      .setDesc(
+        "Allow the same sound to play multiple times at once. Disable this to prevent stacking the same file by repeated clicks.",
+      )
       .addToggle((tg) =>
         tg
           .setValue(this.plugin.settings.allowOverlap)
@@ -225,6 +229,18 @@ export class SoundboardSettingTab extends PluginSettingTab {
             this.plugin.settings.allowOverlap = v;
             void this.plugin.saveSettings();
           }),
+      );
+	  
+    new Setting(containerEl)
+      .setName("Exclusive playback")
+      .setDesc(
+        "When starting a new sound or playlist, fade out all currently playing sounds first. Useful if you want only one track at a time.",
+      )
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.exclusivePlayback).onChange((v) => {
+          this.plugin.settings.exclusivePlayback = v;
+          void this.plugin.saveSettings();
+        }),
       );
 
     new Setting(containerEl)

@@ -177,7 +177,7 @@ var AudioEngine = class {
     return await this.playWithBuffer(file, opts);
   }
   async playWithBuffer(file, opts = {}) {
-    var _a, _b;
+    var _a, _b, _c;
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
     const ctx = this.ctx;
@@ -187,7 +187,8 @@ var AudioEngine = class {
     const gain = ctx.createGain();
     gain.gain.value = 0;
     const loop = !!opts.loop;
-    source.loop = loop;
+    const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
+    source.loop = loop && loopDelaySeconds.length === 0;
     const trim = typeof opts.loopEndTrimSeconds === "number" ? Math.max(0, opts.loopEndTrimSeconds) : 0;
     if (loop && trim > 0) {
       source.loopStart = 0;
@@ -217,22 +218,17 @@ var AudioEngine = class {
       startTime: now,
       offset: 0,
       lastVolume: targetVol,
+      fadeInMs: Math.max(0, (_c = opts.fadeInMs) != null ? _c : 0),
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       loopEndTrimSeconds: trim
     };
     this.playing.set(id, rec);
-    source.onended = () => {
-      const existing = this.playing.get(id);
-      if (!existing) return;
-      if (existing.state !== "playing") return;
-      this.playing.delete(id);
-      this.emit({
-        type: "stop",
-        filePath: file.path,
-        id,
-        reason: "ended"
-      });
-    };
-    source.start();
+    this.attachBufferEndedHandler(rec, source);
+    const playDuration = loop && loopDelaySeconds.length > 0 && trim > 0 ? Math.max(1e-3, buffer.duration - trim) : void 0;
+    if (playDuration != null) source.start(0, 0, playDuration);
+    else source.start();
     this.emit({ type: "start", filePath: file.path, id });
     return {
       id,
@@ -240,14 +236,15 @@ var AudioEngine = class {
     };
   }
   async playWithMediaElement(file, opts = {}) {
-    var _a, _b;
+    var _a, _b, _c;
     await this.ensureContext();
     const ctx = this.ctx;
     const id = this.createId();
     const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
     element.src = this.app.vault.getResourcePath(file);
-    element.loop = !!opts.loop;
+    const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
+    element.loop = !!opts.loop && loopDelaySeconds.length === 0;
     const node = ctx.createMediaElementSource(element);
     const gain = ctx.createGain();
     gain.gain.value = 0;
@@ -272,6 +269,10 @@ var AudioEngine = class {
       loop: !!opts.loop,
       state: "playing",
       lastVolume: targetVol,
+      fadeInMs: Math.max(0, (_c = opts.fadeInMs) != null ? _c : 0),
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       endedHandler: null
     };
     this.playing.set(id, rec);
@@ -279,6 +280,10 @@ var AudioEngine = class {
       const existing = this.playing.get(id);
       if (!existing) return;
       if (existing.state !== "playing") return;
+      if (existing.kind === "media" && existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedMediaLoop(existing);
+        return;
+      }
       this.playing.delete(id);
       this.cleanupMediaRecord(rec);
       this.emit({
@@ -310,8 +315,9 @@ var AudioEngine = class {
     element.preload = "auto";
     element.src = this.app.vault.getResourcePath(file);
     const loop = !!opts.loop;
+    const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
     const trim = typeof opts.loopEndTrimSeconds === "number" ? Math.max(0, opts.loopEndTrimSeconds) : 0;
-    element.loop = loop && trim <= 0;
+    element.loop = loop && trim <= 0 && loopDelaySeconds.length === 0;
     const targetVol = this.clamp01((_a = opts.volume) != null ? _a : 1);
     const fadeInMs = Math.max(0, (_b = opts.fadeInMs) != null ? _b : 0);
     const rec = {
@@ -322,6 +328,10 @@ var AudioEngine = class {
       loop,
       state: "playing",
       lastVolume: targetVol,
+      fadeInMs,
+      loopDelaySeconds,
+      loopDelayIndex: 0,
+      loopTimer: null,
       endedHandler: null,
       timeUpdateHandler: null,
       fadeTimer: null,
@@ -333,6 +343,10 @@ var AudioEngine = class {
       const existing = this.playing.get(id);
       if (!existing || existing.kind !== "media-direct") return;
       if (existing.state !== "playing") return;
+      if (existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedDirectMediaLoop(existing);
+        return;
+      }
       if (existing.loop && existing.loopEndTrimSeconds > 0) {
         try {
           existing.element.currentTime = 0;
@@ -352,7 +366,7 @@ var AudioEngine = class {
     };
     rec.endedHandler = endedHandler;
     element.addEventListener("ended", endedHandler);
-    if (loop && trim > 0) {
+    if (loop && trim > 0 && loopDelaySeconds.length === 0) {
       const timeUpdateHandler = () => {
         if (rec.state !== "playing") return;
         const dur = rec.element.duration;
@@ -607,6 +621,118 @@ var AudioEngine = class {
   createId() {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
+  normalizeLoopDelaySeconds(values) {
+    if (!Array.isArray(values)) return [];
+    return values.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
+  }
+  nextLoopDelayMs(rec) {
+    if (!rec.loopDelaySeconds.length) return 0;
+    const delay = rec.loopDelaySeconds[rec.loopDelayIndex % rec.loopDelaySeconds.length];
+    rec.loopDelayIndex++;
+    return Math.max(0, delay * 1e3);
+  }
+  cancelLoopTimer(rec) {
+    if (rec.loopTimer != null) {
+      window.clearTimeout(rec.loopTimer);
+      rec.loopTimer = null;
+    }
+  }
+  attachBufferEndedHandler(rec, source) {
+    source.onended = () => {
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "buffer") return;
+      if (existing.state !== "playing") return;
+      if (existing.loop && existing.loopDelaySeconds.length > 0) {
+        this.scheduleDelayedBufferLoop(existing);
+        return;
+      }
+      this.playing.delete(existing.id);
+      this.cleanupRecord(existing);
+      this.emit({
+        type: "stop",
+        filePath: existing.file.path,
+        id: existing.id,
+        reason: "ended"
+      });
+    };
+  }
+  scheduleDelayedBufferLoop(rec) {
+    var _a;
+    if (!this.ctx) return;
+    try {
+      (_a = rec.source) == null ? void 0 : _a.disconnect();
+    } catch (e) {
+    }
+    rec.source = null;
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+      rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "buffer" || existing.state !== "playing") return;
+      if (!this.ctx) return;
+      const source = this.ctx.createBufferSource();
+      source.buffer = existing.buffer;
+      source.loop = false;
+      source.connect(existing.gain);
+      existing.source = source;
+      existing.startTime = this.ctx.currentTime;
+      existing.offset = 0;
+      const fadeSec = Math.max(0, existing.fadeInMs) / 1e3;
+      existing.gain.gain.cancelScheduledValues(this.ctx.currentTime);
+      if (fadeSec > 0) {
+        existing.gain.gain.setValueAtTime(0, this.ctx.currentTime);
+        existing.gain.gain.linearRampToValueAtTime(existing.lastVolume, this.ctx.currentTime + fadeSec);
+      } else {
+        existing.gain.gain.setValueAtTime(existing.lastVolume, this.ctx.currentTime);
+      }
+      this.attachBufferEndedHandler(existing, source);
+      const playDuration = existing.loopEndTrimSeconds > 0 ? Math.max(1e-3, existing.buffer.duration - existing.loopEndTrimSeconds) : void 0;
+      if (playDuration != null) source.start(0, 0, playDuration);
+      else source.start();
+    }, delayMs);
+  }
+  scheduleDelayedMediaLoop(rec) {
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+      rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "media" || existing.state !== "playing") return;
+      if (!this.ctx) return;
+      const fadeSec = Math.max(0, existing.fadeInMs) / 1e3;
+      const now = this.ctx.currentTime;
+      existing.gain.gain.cancelScheduledValues(now);
+      if (fadeSec > 0) {
+        existing.gain.gain.setValueAtTime(0, now);
+        existing.gain.gain.linearRampToValueAtTime(existing.lastVolume, now + fadeSec);
+      } else {
+        existing.gain.gain.setValueAtTime(existing.lastVolume, now);
+      }
+      try {
+        existing.element.currentTime = 0;
+        void existing.element.play();
+      } catch (e) {
+      }
+    }, delayMs);
+  }
+  scheduleDelayedDirectMediaLoop(rec) {
+    const delayMs = this.nextLoopDelayMs(rec);
+    rec.loopTimer = window.setTimeout(() => {
+      rec.loopTimer = null;
+      const existing = this.playing.get(rec.id);
+      if (!existing || existing.kind !== "media-direct" || existing.state !== "playing") return;
+      try {
+        existing.element.currentTime = 0;
+        if (existing.fadeInMs > 0) {
+          existing.element.volume = 0;
+          this.animateDirectRecordToRaw(existing, existing.lastVolume, existing.fadeInMs);
+        } else {
+          this.applyDirectElementVolume(existing, existing.lastVolume);
+        }
+        void existing.element.play();
+      } catch (e) {
+      }
+    }, delayMs);
+  }
   toAppliedDirectVolume(rawVolume) {
     return this.clamp01(this.clamp01(rawVolume) * this.masterVolume);
   }
@@ -652,6 +778,7 @@ var AudioEngine = class {
     const rec = this.playing.get(id);
     if (!rec) return Promise.resolve();
     this.playing.delete(id);
+    this.cancelLoopTimer(rec);
     const fadeOutMs = Math.max(0, (_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0);
     const filePath = rec.file.path;
     if (rec.kind === "media-direct") {
@@ -722,6 +849,7 @@ var AudioEngine = class {
   }
   cleanupRecord(rec) {
     var _a;
+    this.cancelLoopTimer(rec);
     if (rec.kind === "buffer") {
       try {
         (_a = rec.source) == null ? void 0 : _a.stop();
@@ -794,8 +922,14 @@ var AudioEngine = class {
   }
   pauseRecord(rec) {
     if (rec.state !== "playing") return;
+    this.cancelLoopTimer(rec);
     if (rec.kind === "buffer") {
-      if (!this.ctx || !rec.source) return;
+      if (!this.ctx) return;
+      if (!rec.source) {
+        rec.state = "paused";
+        rec.offset = 0;
+        return;
+      }
       const elapsed = Math.max(0, this.ctx.currentTime - rec.startTime);
       const newOffset = rec.offset + elapsed;
       rec.offset = Math.max(0, Math.min(rec.buffer.duration, newOffset));
@@ -831,35 +965,31 @@ var AudioEngine = class {
       const offset = Math.max(0, Math.min(rec.offset, maxOffset));
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
-      source.loop = rec.loop;
+      source.loop = rec.loop && rec.loopDelaySeconds.length === 0;
       if (rec.loop && rec.loopEndTrimSeconds > 0) {
         source.loopStart = 0;
         const loopEnd = Math.max(1e-3, buffer.duration - rec.loopEndTrimSeconds);
         source.loopEnd = Math.max(source.loopStart + 1e-3, loopEnd);
       }
       source.connect(rec.gain);
-      const id = rec.id;
-      source.onended = () => {
-        const existing = this.playing.get(id);
-        if (!existing) return;
-        if (existing.state !== "playing") return;
-        this.playing.delete(id);
-        this.emit({
-          type: "stop",
-          filePath: existing.file.path,
-          id,
-          reason: "ended"
-        });
-      };
       rec.source = source;
       rec.state = "playing";
       rec.startTime = this.ctx.currentTime;
-      source.start(0, offset);
+      this.attachBufferEndedHandler(rec, source);
+      if (rec.loop && rec.loopDelaySeconds.length > 0 && rec.loopEndTrimSeconds > 0) {
+        const endAt = Math.max(1e-3, buffer.duration - rec.loopEndTrimSeconds);
+        const safeOffset = Math.max(0, Math.min(offset, endAt - 1e-3));
+        const duration = Math.max(1e-3, endAt - safeOffset);
+        source.start(0, safeOffset, duration);
+      } else {
+        source.start(0, offset);
+      }
       return;
     }
     if (rec.kind === "media") {
       rec.state = "playing";
       try {
+        if (rec.element.ended) rec.element.currentTime = 0;
         void rec.element.play();
       } catch (e) {
       }
@@ -867,6 +997,7 @@ var AudioEngine = class {
     }
     rec.state = "playing";
     try {
+      if (rec.element.ended) rec.element.currentTime = 0;
       void rec.element.play();
     } catch (e) {
     }
@@ -923,6 +1054,7 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
     const originalVol = vol;
     let loop = typeof pref.loop === "boolean" ? pref.loop : defaultLoop;
     let crossfadeStr = typeof pref.crossfadeMs === "number" ? String(pref.crossfadeMs) : "";
+    let loopDelayStr = Array.isArray(pref.loopDelaySeconds) ? pref.loopDelaySeconds.join(", ") : "";
     new import_obsidian.Setting(contentEl).setName("Fade in (ms)").setDesc("Leave empty to use the global default.").addText(
       (ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
         fadeInStr = v;
@@ -951,6 +1083,13 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
         })
       );
     }
+    new import_obsidian.Setting(contentEl).setName("Loop delay sequence (seconds)").setDesc(
+      "Optional. Only used when loop is enabled. Example: 20, 30, 60 waits 20s before the first repeat, then 30s, then 60s, then repeats the sequence."
+    ).addText(
+      (ti) => ti.setPlaceholder("E.g. 20, 30, 60").setValue(loopDelayStr).onChange((v) => {
+        loopDelayStr = v;
+      })
+    );
     new import_obsidian.Setting(contentEl).setName("Insert note button").setDesc("Insert a Markdown button for this sound into the active note.").addButton(
       (b) => b.setButtonText("Insert button").onClick(() => {
         this.plugin.insertSoundButtonIntoActiveNote(this.filePath);
@@ -963,6 +1102,7 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
         delete pref.volume;
         delete pref.loop;
         delete pref.crossfadeMs;
+        delete pref.loopDelaySeconds;
         this.plugin.setSoundPref(this.filePath, pref);
         await this.plugin.saveSettings();
         this.plugin.refreshViews();
@@ -977,6 +1117,7 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
         if (fi != null && Number.isNaN(fi)) return;
         if (fo != null && Number.isNaN(fo)) return;
         if (cf != null && Number.isNaN(cf)) return;
+        const parsedLoopDelays = loopDelayStr.trim() === "" ? [] : loopDelayStr.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n >= 0);
         pref.fadeInMs = fi;
         pref.fadeOutMs = fo;
         pref.volume = vol;
@@ -988,6 +1129,11 @@ var PerSoundSettingsModal = class extends import_obsidian.Modal {
         if (isAmbience) {
           if (cf == null || cf <= 0) delete pref.crossfadeMs;
           else pref.crossfadeMs = cf;
+        }
+        if (parsedLoopDelays.length > 0) {
+          pref.loopDelaySeconds = parsedLoopDelays;
+        } else {
+          delete pref.loopDelaySeconds;
         }
         this.plugin.setSoundPref(this.filePath, pref);
         await this.plugin.saveSettings();
@@ -1401,18 +1547,18 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     }
     const pref = this.plugin.getSoundPref(file.path);
     const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
+    const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
     tile.onclick = async () => {
       var _a2, _b;
-      if (!this.plugin.settings.allowOverlap) {
-        await this.plugin.engine.stopByFile(file, 0);
-      }
+      await this.plugin.prepareBeforeStartingSingle(file);
       const baseVol = (_a2 = pref.volume) != null ? _a2 : 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: (_b = pref.fadeInMs) != null ? _b : this.plugin.settings.defaultFadeInMs,
-        loopEndTrimSeconds
+        loopEndTrimSeconds,
+        loopDelaySeconds
       });
     };
     const controls = card.createDiv({ cls: "ttrpg-sb-btnrow" });
@@ -1478,18 +1624,18 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     });
     const pref = this.plugin.getSoundPref(file.path);
     const loopEndTrimSeconds = this.plugin.getLoopEndTrimSecondsForPath(file.path);
+    const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
     main.onclick = async () => {
       var _a2, _b;
-      if (!this.plugin.settings.allowOverlap) {
-        await this.plugin.engine.stopByFile(file, 0);
-      }
+      await this.plugin.prepareBeforeStartingSingle(file);
       const baseVol = (_a2 = pref.volume) != null ? _a2 : 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
       await this.plugin.engine.play(file, {
         volume: effectiveVol,
         loop: this.plugin.getEffectiveLoopForPath(file.path),
         fadeInMs: (_b = pref.fadeInMs) != null ? _b : this.plugin.settings.defaultFadeInMs,
-        loopEndTrimSeconds
+        loopEndTrimSeconds,
+        loopDelaySeconds
       });
     };
     const controls = row.createDiv({ cls: "ttrpg-sb-simple-controls" });
@@ -1976,6 +2122,7 @@ var DEFAULT_SETTINGS = {
   defaultFadeInMs: 3e3,
   defaultFadeOutMs: 3e3,
   allowOverlap: true,
+  exclusivePlayback: false,
   masterVolume: 1,
   mediaElementThresholdMB: 25,
   ambienceVolume: 1,
@@ -2077,9 +2224,19 @@ var SoundboardSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Allow overlap").setDesc("Play multiple sounds at the same time.").addToggle(
+    new import_obsidian6.Setting(containerEl).setName("Allow retrigger overlap").setDesc(
+      "Allow the same sound to play multiple times at once. Disable this to prevent stacking the same file by repeated clicks."
+    ).addToggle(
       (tg) => tg.setValue(this.plugin.settings.allowOverlap).onChange((v) => {
         this.plugin.settings.allowOverlap = v;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian6.Setting(containerEl).setName("Exclusive playback").setDesc(
+      "When starting a new sound or playlist, fade out all currently playing sounds first. Useful if you want only one track at a time."
+    ).addToggle(
+      (tg) => tg.setValue(this.plugin.settings.exclusivePlayback).onChange((v) => {
+        this.plugin.settings.exclusivePlayback = v;
         void this.plugin.saveSettings();
       })
     );
@@ -2715,6 +2872,19 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return 0;
     return ms / 1e3;
   }
+  getLoopDelaySecondsForPath(path) {
+    const pref = this.getSoundPref(path);
+    const raw = pref.loopDelaySeconds;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
+  }
+  async prepareBeforeStartingSingle(file) {
+    if (this.settings.exclusivePlayback) {
+      await this.engine.stopAll(this.settings.defaultFadeOutMs);
+    } else if (!this.settings.allowOverlap) {
+      await this.engine.stopByFile(file, 0);
+    }
+  }
   // ===== View activation / library wiring =====
   async activateView() {
     const { workspace } = this.app;
@@ -3110,14 +3280,14 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
     const fadeInMs = pref.fadeInMs != null ? pref.fadeInMs : this.settings.defaultFadeInMs;
     const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
-    if (!this.settings.allowOverlap) {
-      await this.engine.stopByFile(file, 0);
-    }
+    const loopDelaySeconds = this.getLoopDelaySecondsForPath(path);
+    await this.prepareBeforeStartingSingle(file);
     await this.engine.play(file, {
       volume: effective,
       loop: this.getEffectiveLoopForPath(path),
       fadeInMs,
-      loopEndTrimSeconds
+      loopEndTrimSeconds,
+      loopDelaySeconds
     });
   }
   // ===== Playlist runtime control (for UI + playlist note buttons) =====
@@ -3297,7 +3467,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     return a;
   }
   async playPlaylistIndex(pl, st, position) {
-    var _a, _b;
+    var _a, _b, _c;
     const trackCount = pl.tracks.length;
     if (!trackCount) {
       st.active = false;
@@ -3330,6 +3500,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     const rawVol = (_a = pref.volume) != null ? _a : 1;
     const effectiveVol = rawVol * (this.isAmbiencePath(file.path) ? this.settings.ambienceVolume : 1);
     const fadeInMs = (_b = pref.fadeInMs) != null ? _b : this.settings.defaultFadeInMs;
+    if (this.settings.exclusivePlayback) {
+      await this.engine.stopAll((_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs);
+    }
     st.position = position;
     st.active = true;
     st.currentTrackPath = file.path;
@@ -3605,18 +3778,18 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     const baseVol = (_a = pref.volume) != null ? _a : 1;
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
     const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
+    const loopDelaySeconds = this.getLoopDelaySecondsForPath(path);
     const playing = new Set(this.engine.getPlayingFilePaths());
     if (playing.has(path)) {
       await this.engine.stopByFile(file, (_b = pref.fadeOutMs) != null ? _b : this.settings.defaultFadeOutMs);
     } else {
-      if (!this.settings.allowOverlap) {
-        await this.engine.stopByFile(file, 0);
-      }
+      await this.prepareBeforeStartingSingle(file);
       await this.engine.play(file, {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
         fadeInMs: (_c = pref.fadeInMs) != null ? _c : this.settings.defaultFadeInMs,
-        loopEndTrimSeconds
+        loopEndTrimSeconds,
+        loopDelaySeconds
       });
     }
     this.updateNoteButtonsPlayingState();

@@ -27,6 +27,9 @@ export class PerSoundSettingsModal extends Modal {
     let loop = typeof pref.loop === "boolean" ? pref.loop : defaultLoop;
     let crossfadeStr =
       typeof pref.crossfadeMs === "number" ? String(pref.crossfadeMs) : "";
+    let loopDelayStr = Array.isArray(pref.loopDelaySeconds)
+      ? pref.loopDelaySeconds.join(", ")
+      : "";
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -87,6 +90,20 @@ export class PerSoundSettingsModal extends Modal {
             }),
         );
     }
+	
+    new Setting(contentEl)
+      .setName("Loop delay sequence (seconds)")
+      .setDesc(
+        "Optional. Only used when loop is enabled. Example: 20, 30, 60 waits 20s before the first repeat, then 30s, then 60s, then repeats the sequence.",
+      )
+      .addText((ti) =>
+        ti
+          .setPlaceholder("E.g. 20, 30, 60")
+          .setValue(loopDelayStr)
+          .onChange((v) => {
+            loopDelayStr = v;
+          }),
+      );
 
     new Setting(contentEl)
       .setName("Insert note button")
@@ -105,6 +122,7 @@ export class PerSoundSettingsModal extends Modal {
           delete pref.volume;
           delete pref.loop;
 		  delete pref.crossfadeMs;
+		  delete pref.loopDelaySeconds;
 
           this.plugin.setSoundPref(this.filePath, pref);
           await this.plugin.saveSettings();
@@ -126,6 +144,14 @@ export class PerSoundSettingsModal extends Modal {
           if (fi != null && Number.isNaN(fi)) return;
           if (fo != null && Number.isNaN(fo)) return;
           if (cf != null && Number.isNaN(cf)) return;
+		  
+          const parsedLoopDelays =
+            loopDelayStr.trim() === ""
+              ? []
+              : loopDelayStr
+                  .split(",")
+                  .map((s) => Number(s.trim()))
+                  .filter((n) => Number.isFinite(n) && n >= 0);
 
           pref.fadeInMs = fi;
           pref.fadeOutMs = fo;
@@ -141,6 +167,12 @@ export class PerSoundSettingsModal extends Modal {
           if (isAmbience) {
             if (cf == null || cf <= 0) delete pref.crossfadeMs;
             else pref.crossfadeMs = cf;
+          }
+		  
+          if (parsedLoopDelays.length > 0) {
+            pref.loopDelaySeconds = parsedLoopDelays;
+          } else {
+            delete pref.loopDelaySeconds;
           }
 
           this.plugin.setSoundPref(this.filePath, pref);

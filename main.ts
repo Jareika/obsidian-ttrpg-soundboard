@@ -12,6 +12,7 @@ interface SoundPrefs {
   fadeInMs?: number;
   fadeOutMs?: number;
   crossfadeMs?: number;
+  loopDelaySeconds?: number[];
 }
 
 interface PlaylistPrefs {
@@ -368,6 +369,24 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const ms = pref.crossfadeMs;
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return 0;
     return ms / 1000;
+  }
+  
+  getLoopDelaySecondsForPath(path: string): number[] {
+    const pref = this.getSoundPref(path);
+    const raw = pref.loopDelaySeconds;
+    if (!Array.isArray(raw)) return [];
+
+    return raw
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v >= 0);
+  }
+
+  async prepareBeforeStartingSingle(file: TFile): Promise<void> {
+    if (this.settings.exclusivePlayback) {
+      await this.engine.stopAll(this.settings.defaultFadeOutMs);
+    } else if (!this.settings.allowOverlap) {
+      await this.engine.stopByFile(file, 0);
+    }
   }
 
   // ===== View activation / library wiring =====
@@ -831,16 +850,16 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
     const fadeInMs = pref.fadeInMs != null ? pref.fadeInMs : this.settings.defaultFadeInMs;
     const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
+	const loopDelaySeconds = this.getLoopDelaySecondsForPath(path);
 
-    if (!this.settings.allowOverlap) {
-      await this.engine.stopByFile(file, 0);
-    }
+    await this.prepareBeforeStartingSingle(file);
 
     await this.engine.play(file, {
       volume: effective,
       loop: this.getEffectiveLoopForPath(path),
       fadeInMs,
       loopEndTrimSeconds,
+	  loopDelaySeconds,
     });
   }
 
@@ -1102,6 +1121,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const rawVol = pref.volume ?? 1;
     const effectiveVol = rawVol * (this.isAmbiencePath(file.path) ? this.settings.ambienceVolume : 1);
     const fadeInMs = pref.fadeInMs ?? this.settings.defaultFadeInMs;
+	
+    if (this.settings.exclusivePlayback) {
+      await this.engine.stopAll(pref.fadeOutMs ?? this.settings.defaultFadeOutMs);
+    }
 
     st.position = position;
     st.active = true;
@@ -1425,20 +1448,20 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     const baseVol = pref.volume ?? 1;
     const effective = baseVol * (isAmb ? this.settings.ambienceVolume : 1);
     const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
+	const loopDelaySeconds = this.getLoopDelaySecondsForPath(path);
 
     const playing = new Set(this.engine.getPlayingFilePaths());
 
     if (playing.has(path)) {
       await this.engine.stopByFile(file, pref.fadeOutMs ?? this.settings.defaultFadeOutMs);
     } else {
-      if (!this.settings.allowOverlap) {
-        await this.engine.stopByFile(file, 0);
-      }
+      await this.prepareBeforeStartingSingle(file);
       await this.engine.play(file, {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
         fadeInMs: pref.fadeInMs ?? this.settings.defaultFadeInMs,
         loopEndTrimSeconds,
+		loopDelaySeconds,
       });
     }
 

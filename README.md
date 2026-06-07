@@ -16,6 +16,12 @@ https://ttrpg-tools-obsidian.org/
   - Stop button (highlights while the sound is active).
   - Loop toggle (persistent).
   - Inline volume slider (persistent).
+- Optional delayed loop sequence per sound, for example `20, 30, 60` seconds between repeats.
+ 
+### Playback behavior
+- **Allow retrigger overlap** controls whether the same sound may be stacked multiple times.
+- **Exclusive playback** fades out all currently playing sounds before starting a new sound or playlist.
+
 
 ### Long tracks: faster start (MediaElement mode)
 Large audio files (for example 1-hour ambience tracks) can be played using an `HTMLAudioElement` (MediaElement) instead of decoding the entire file into an `AudioBuffer`.
