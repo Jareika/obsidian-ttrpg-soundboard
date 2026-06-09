@@ -99,6 +99,56 @@ export default class SoundboardView extends ItemView {
     this.library = library;
     this.render();
   }
+  
+  private normalizeFolderSelection(
+    value: string | undefined,
+    topFolders: string[],
+  ): string | undefined {
+    if (value && topFolders.includes(value)) {
+      return value;
+    }
+
+    if (this.plugin.settings.showAllFoldersOption) {
+      return undefined;
+    }
+
+    return topFolders[0];
+  }
+
+  private normalizeViewStateForAvailableFolders(topFolders: string[]) {
+    let changed = false;
+
+    const nextA = this.normalizeFolderSelection(this.state.folderA, topFolders);
+    const nextB = this.normalizeFolderSelection(this.state.folderB, topFolders);
+    const nextC = this.normalizeFolderSelection(this.state.folderC, topFolders);
+    const nextD = this.normalizeFolderSelection(this.state.folderD, topFolders);
+
+    if (this.state.folderA !== nextA) {
+      this.state.folderA = nextA;
+      changed = true;
+    }
+    if (this.state.folderB !== nextB) {
+      this.state.folderB = nextB;
+      changed = true;
+    }
+    if (this.state.folderC !== nextC) {
+      this.state.folderC = nextC;
+      changed = true;
+    }
+    if (this.state.folderD !== nextD) {
+      this.state.folderD = nextD;
+      changed = true;
+    }
+
+    if (!this.state.activeSlot) {
+      this.state.activeSlot = "A";
+      changed = true;
+    }
+
+    if (changed) {
+      void this.saveViewState();
+    }
+  }
 
   private async saveViewState() {
     await this.leaf.setViewState({
@@ -133,6 +183,8 @@ export default class SoundboardView extends ItemView {
     const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
 
     const topFolders = library?.topFolders ?? [];
+	this.normalizeViewStateForAvailableFolders(topFolders);
+	
     const rootFolder = library?.rootFolder;
     const rootRegex =
       rootFolder != null && rootFolder !== ""
@@ -150,7 +202,9 @@ export default class SoundboardView extends ItemView {
       const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
       const select = wrap.createEl("select");
 
-      select.createEl("option", { text: "All folders", value: "" });
+      if (this.plugin.settings.showAllFoldersOption) {
+        select.createEl("option", { text: "All folders", value: "" });
+      }
       for (const f of topFolders) {
         select.createEl("option", { text: makeLabel(f), value: f });
       }
@@ -191,7 +245,9 @@ export default class SoundboardView extends ItemView {
         goBtn.textContent = "Go";
       }
 
-      select.createEl("option", { text: "All folders", value: "" });
+      if (this.plugin.settings.showAllFoldersOption) {
+        select.createEl("option", { text: "All folders", value: "" });
+      }
       for (const f of topFolders) {
         select.createEl("option", { text: makeLabel(f), value: f });
       }

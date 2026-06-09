@@ -40,6 +40,7 @@ export interface SoundboardSettings {
   tileHeightPx: number; // tile height in px
   noteIconSizePx: number; // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
+  showAllFoldersOption: boolean; // if false, hide "All folders" from toolbar dropdowns
   maxAudioCacheMB: number; // upper limit for decoded-audio cache in MB (0 = no caching)
   iosLockscreenCompatibilityMode: boolean; // force direct HTML audio playback without Web Audio routing
 
@@ -75,6 +76,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   tileHeightPx: 100,
   noteIconSizePx: 40,
   toolbarFourFolders: false,
+  showAllFoldersOption: true,
   maxAudioCacheMB: 512, // default 512 MB of decoded audio
   iosLockscreenCompatibilityMode: false,
 
@@ -327,6 +329,21 @@ export class SoundboardSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.toolbarFourFolders)
           .onChange((v) => {
             this.plugin.settings.toolbarFourFolders = v;
+            void this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }),
+      );
+	  
+    new Setting(containerEl)
+      .setName('Show "All folders" in soundboard dropdowns')
+      .setDesc(
+        "If disabled, the toolbar dropdowns only show concrete folders. Empty selections automatically fall back to the first available folder, which can reduce lag in very large libraries.",
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.showAllFoldersOption)
+          .onChange((v) => {
+            this.plugin.settings.showAllFoldersOption = v;
             void this.plugin.saveSettings();
             this.plugin.refreshViews();
           }),

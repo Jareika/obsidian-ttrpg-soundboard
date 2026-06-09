@@ -1307,6 +1307,45 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     this.library = library;
     this.render();
   }
+  normalizeFolderSelection(value, topFolders) {
+    if (value && topFolders.includes(value)) {
+      return value;
+    }
+    if (this.plugin.settings.showAllFoldersOption) {
+      return void 0;
+    }
+    return topFolders[0];
+  }
+  normalizeViewStateForAvailableFolders(topFolders) {
+    let changed = false;
+    const nextA = this.normalizeFolderSelection(this.state.folderA, topFolders);
+    const nextB = this.normalizeFolderSelection(this.state.folderB, topFolders);
+    const nextC = this.normalizeFolderSelection(this.state.folderC, topFolders);
+    const nextD = this.normalizeFolderSelection(this.state.folderD, topFolders);
+    if (this.state.folderA !== nextA) {
+      this.state.folderA = nextA;
+      changed = true;
+    }
+    if (this.state.folderB !== nextB) {
+      this.state.folderB = nextB;
+      changed = true;
+    }
+    if (this.state.folderC !== nextC) {
+      this.state.folderC = nextC;
+      changed = true;
+    }
+    if (this.state.folderD !== nextD) {
+      this.state.folderD = nextD;
+      changed = true;
+    }
+    if (!this.state.activeSlot) {
+      this.state.activeSlot = "A";
+      changed = true;
+    }
+    if (changed) {
+      void this.saveViewState();
+    }
+  }
   async saveViewState() {
     await this.leaf.setViewState({
       type: VIEW_TYPE_TTRPG_SOUNDBOARD,
@@ -1335,6 +1374,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     }
     const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
     const topFolders = (_a = library == null ? void 0 : library.topFolders) != null ? _a : [];
+    this.normalizeViewStateForAvailableFolders(topFolders);
     const rootFolder = library == null ? void 0 : library.rootFolder;
     const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(`^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`) : null;
     const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
@@ -1346,7 +1386,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     const createFolderSelectTwo = (parent, currentValue, slot) => {
       const wrap = parent.createDiv({ cls: "ttrpg-sb-folder-select" });
       const select = wrap.createEl("select");
-      select.createEl("option", { text: "All folders", value: "" });
+      if (this.plugin.settings.showAllFoldersOption) {
+        select.createEl("option", { text: "All folders", value: "" });
+      }
       for (const f of topFolders) {
         select.createEl("option", { text: makeLabel(f), value: f });
       }
@@ -1382,7 +1424,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
         });
         goBtn.textContent = "Go";
       }
-      select.createEl("option", { text: "All folders", value: "" });
+      if (this.plugin.settings.showAllFoldersOption) {
+        select.createEl("option", { text: "All folders", value: "" });
+      }
       for (const f of topFolders) {
         select.createEl("option", { text: makeLabel(f), value: f });
       }
@@ -2133,6 +2177,7 @@ var DEFAULT_SETTINGS = {
   tileHeightPx: 100,
   noteIconSizePx: 40,
   toolbarFourFolders: false,
+  showAllFoldersOption: true,
   maxAudioCacheMB: 512,
   // default 512 MB of decoded audio
   iosLockscreenCompatibilityMode: false,
@@ -2289,6 +2334,15 @@ var SoundboardSettingTab = class extends import_obsidian6.PluginSettingTab {
     ).addToggle(
       (tg) => tg.setValue(this.plugin.settings.toolbarFourFolders).onChange((v) => {
         this.plugin.settings.toolbarFourFolders = v;
+        void this.plugin.saveSettings();
+        this.plugin.refreshViews();
+      })
+    );
+    new import_obsidian6.Setting(containerEl).setName('Show "All folders" in soundboard dropdowns').setDesc(
+      "If disabled, the toolbar dropdowns only show concrete folders. Empty selections automatically fall back to the first available folder, which can reduce lag in very large libraries."
+    ).addToggle(
+      (tg) => tg.setValue(this.plugin.settings.showAllFoldersOption).onChange((v) => {
+        this.plugin.settings.showAllFoldersOption = v;
         void this.plugin.saveSettings();
         this.plugin.refreshViews();
       })
