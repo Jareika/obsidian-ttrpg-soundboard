@@ -1245,6 +1245,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     super(leaf);
     this.state = {};
     this.playingFiles = /* @__PURE__ */ new Set();
+    this.hasRestoredState = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -1300,6 +1301,7 @@ var SoundboardView = class extends import_obsidian3.ItemView {
       next.activeSlot = "A";
     }
     this.state = next;
+    this.hasRestoredState = true;
     this.render();
     await Promise.resolve();
   }
@@ -1317,6 +1319,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     return topFolders[0];
   }
   normalizeViewStateForAvailableFolders(topFolders) {
+    if (!this.hasRestoredState) {
+      return;
+    }
     let changed = false;
     const nextA = this.normalizeFolderSelection(this.state.folderA, topFolders);
     const nextB = this.normalizeFolderSelection(this.state.folderB, topFolders);
@@ -1347,6 +1352,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     }
   }
   async saveViewState() {
+    if (!this.hasRestoredState) {
+      return;
+    }
     await this.leaf.setViewState({
       type: VIEW_TYPE_TTRPG_SOUNDBOARD,
       state: this.getState(),
@@ -1374,7 +1382,9 @@ var SoundboardView = class extends import_obsidian3.ItemView {
     }
     const rowControls = toolbar.createDiv({ cls: "ttrpg-sb-toolbar-row" });
     const topFolders = (_a = library == null ? void 0 : library.topFolders) != null ? _a : [];
-    this.normalizeViewStateForAvailableFolders(topFolders);
+    if (library && topFolders.length > 0 && this.hasRestoredState) {
+      this.normalizeViewStateForAvailableFolders(topFolders);
+    }
     const rootFolder = library == null ? void 0 : library.rootFolder;
     const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(`^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`) : null;
     const makeLabel = (f) => rootRegex ? f.replace(rootRegex, "") || f : f;
@@ -2989,14 +2999,18 @@ var TTRPGSoundboardPlugin = class extends import_obsidian9.Plugin {
     }
   }
   async rebindLeafIfNeeded(leaf) {
+    var _a;
     const view1 = leaf.view;
     if (hasSetLibrary(view1)) {
       view1.setLibrary(this.library);
       return;
     }
     try {
+      const existingState = leaf.getViewState();
       await leaf.setViewState({
+        ...existingState,
         type: VIEW_TYPE_TTRPG_SOUNDBOARD,
+        state: (_a = existingState.state) != null ? _a : {},
         active: true
       });
       const view2 = leaf.view;
