@@ -1,4 +1,11 @@
 import { App, TFile, TFolder, normalizePath } from "obsidian";
+import {
+  assertExternalDirectory,
+  createExternalAudioFile,
+  readExternalDirectory,
+  resolveExternalPath,
+} from "./externalFiles";
+import type { LibraryFile } from "./externalFiles";
 
 export const IMG_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 const AMBIENCE_FOLDER_NAME = "ambience";
@@ -7,13 +14,13 @@ export interface PlaylistInfo {
   path: string; // full folder path (for example: Root/Category/PlaylistA)
   name: string; // folder name
   parent: string; // path of the parent (top-level) folder
-  tracks: TFile[]; // audio files inside the playlist folder (recursively)
-  cover?: TFile; // cover image (either from playlist folder or from shared thumbnail folder)
+  tracks: LibraryFile[]; // audio files inside the playlist folder (recursively)
+  cover?: LibraryFile; // vault or external cover image
 }
 
 export interface FolderContent {
   folder: string; // top-level folder path
-  files: TFile[]; // audio files directly in this folder (+ ambience subfolders)
+  files: LibraryFile[]; // audio files directly in this folder (+ ambience subfolders)
   playlists: PlaylistInfo[]; // direct subfolders (except Ambience) treated as playlists
 }
 
@@ -21,7 +28,7 @@ export interface LibraryModel {
   rootFolder?: string;
   topFolders: string[];
   byFolder: Record<string, FolderContent>;
-  allSingles: TFile[]; // union of all "files" from all top-level folders (+ optional root files)
+  allSingles: LibraryFile[]; // union of all "files" from all top-level folders (+ optional root files)
 }
 
 /**
@@ -65,17 +72,27 @@ export function findAudioFiles(app: App, folders: string[], extensions: string[]
  * - under a single root folder (recommended), or
  * - from an explicit list of top-level folders (legacy).
  */
-export function buildLibrary(
+export async function buildLibrary(
   app: App,
   opts: {
+    location: "vault" | "external";
     rootFolder?: string;
+    externalRootFolder?: string;
     foldersLegacy?: string[];
     exts: string[];
     includeRootFiles?: boolean;
-    thumbnailFolder?: string; // if set, playlist covers are looked up there by playlist folder name
+    thumbnailFolder?: string;
   },
-): LibraryModel {
-  if (opts.rootFolder && opts.rootFolder.trim()) {
+): Promise<LibraryModel> {
+  if (opts.location === "external") {
+    return await buildLibraryFromExternalRoot(
+      opts.externalRootFolder ?? "",
+      opts.exts,
+      !!opts.includeRootFiles,
+    );
+  }
+
+  if (opts.rootFolder?.trim()) {
     return buildLibraryFromRoot(
       app,
       opts.rootFolder,
@@ -84,8 +101,13 @@ export function buildLibrary(
       opts.thumbnailFolder,
     );
   }
-  const folders = (opts.foldersLegacy ?? []).filter(Boolean);
-  return buildLibraryFromFolders(app, folders, opts.exts, opts.thumbnailFolder);
+
+  return buildLibraryFromFolders(
+    app,
+    opts.foldersLegacy ?? [],
+    opts.exts,
+    opts.thumbnailFolder,
+  );
 }
 
 function buildLibraryFromRoot(
@@ -286,6 +308,218 @@ export function findAudioFilesUnderRoot(
     }
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function buildLibraryFromExternalRoot(
+  externalRootFolder: string,
+  extensions: string[],
+  includeRootFiles: boolean,
+): Promise<LibraryModel> {
+  if (!externalRootFolder.trim()) {
+    throw new Error("No external sound folder has been configured.");
+  }
+
+  const root = resolveExternalPath(externalRootFolder);
+  await assertExternalDirectory(root);
+
+  const exts = new Set(
+    extensions.map((ext) => ext.toLowerCase().replace(/^\./, "")),
+  );
+
+  const rootEntries = await readExternalDirectory(root);
+  const topFolderEntries = rootEntries
+    .filter((entry) => entry.isDirectory)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const topFolders = topFolderEntries.map((entry) => entry.name);
+  const byFolder: Record<string, FolderContent> = {};
+  const allSingles: LibraryFile[] = [];
+
+  if (includeRootFiles) {
+    const rootSingles = await externalFilesDirectlyIn(root, root, exts);
+    allSingles.push(...rootSingles);
+  }
+
+  for (const folderEntry of topFolderEntries) {
+    const folderPath = folderEntry.name;
+
+    const directFiles = await externalFilesDirectlyIn(
+      root,
+      folderEntry.absolutePath,
+      exts,
+    );
+
+    const { playlists, ambienceSingles } =
+      await externalChildPlaylistsAndAmbienceSingles(
+        root,
+        folderPath,
+        folderEntry.absolutePath,
+        exts,
+      );
+
+    const files = [...directFiles, ...ambienceSingles].sort((a, b) =>
+      a.path.localeCompare(b.path),
+    );
+
+    byFolder[folderPath] = {
+      folder: folderPath,
+      files,
+      playlists,
+    };
+
+    allSingles.push(...files);
+  }
+
+  return {
+    // Deliberately undefined: paths are already relative to the external root.
+    rootFolder: undefined,
+    topFolders,
+    byFolder,
+    allSingles,
+  };
+}
+
+async function externalFilesDirectlyIn(
+  rootPath: string,
+  folderPath: string,
+  exts: Set<string>,
+): Promise<LibraryFile[]> {
+  const entries = await readExternalDirectory(folderPath);
+  const files: LibraryFile[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile) continue;
+
+    const extension = getExtension(entry.name);
+    if (!exts.has(extension)) continue;
+
+    files.push(
+      await createExternalAudioFile(rootPath, entry.absolutePath),
+    );
+  }
+
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  return files;
+}
+
+async function externalChildPlaylistsAndAmbienceSingles(
+  rootPath: string,
+  parentRelativePath: string,
+  parentAbsolutePath: string,
+  exts: Set<string>,
+): Promise<{
+  playlists: PlaylistInfo[];
+  ambienceSingles: LibraryFile[];
+}> {
+  const entries = await readExternalDirectory(parentAbsolutePath);
+  const folders = entries
+    .filter((entry) => entry.isDirectory)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const playlists: PlaylistInfo[] = [];
+  const ambienceSingles: LibraryFile[] = [];
+
+  for (const folder of folders) {
+    const tracks = await collectExternalAudioRecursive(
+      rootPath,
+      folder.absolutePath,
+      exts,
+    );
+
+    if (!tracks.length) continue;
+
+    if (folder.name.toLowerCase() === AMBIENCE_FOLDER_NAME) {
+      ambienceSingles.push(...tracks);
+      continue;
+    }
+
+    const cover = await findExternalCoverImage(
+      rootPath,
+      folder.absolutePath,
+    );
+
+    playlists.push({
+      path: `${parentRelativePath}/${folder.name}`,
+      name: folder.name,
+      parent: parentRelativePath,
+      tracks,
+      cover,
+    });
+  }
+
+  ambienceSingles.sort((a, b) => a.path.localeCompare(b.path));
+  playlists.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { playlists, ambienceSingles };
+}
+
+async function collectExternalAudioRecursive(
+  rootPath: string,
+  folderPath: string,
+  exts: Set<string>,
+): Promise<LibraryFile[]> {
+  const entries = await readExternalDirectory(folderPath);
+  const files: LibraryFile[] = [];
+
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      files.push(
+        ...(await collectExternalAudioRecursive(
+          rootPath,
+          entry.absolutePath,
+          exts,
+        )),
+      );
+      continue;
+    }
+
+    if (!entry.isFile) continue;
+
+    const extension = getExtension(entry.name);
+    if (!exts.has(extension)) continue;
+
+    files.push(
+      await createExternalAudioFile(rootPath, entry.absolutePath),
+    );
+  }
+
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return files;
+}
+
+async function findExternalCoverImage(
+  rootPath: string,
+  playlistFolderPath: string,
+): Promise<LibraryFile | undefined> {
+  const entries = await readExternalDirectory(playlistFolderPath);
+  const imageFiles = entries
+    .filter(
+      (entry) =>
+        entry.isFile && IMG_EXTS.includes(getExtension(entry.name)),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const ext of IMG_EXTS) {
+    const coverName = `cover.${ext}`;
+    const cover = imageFiles.find(
+      (entry) => entry.name.toLowerCase() === coverName,
+    );
+
+    if (cover) {
+      return await createExternalAudioFile(rootPath, cover.absolutePath);
+    }
+  }
+
+  const firstImage = imageFiles[0];
+  if (!firstImage) return undefined;
+
+  return await createExternalAudioFile(rootPath, firstImage.absolutePath);
+}
+
+function getExtension(name: string): string {
+  const lastDot = name.lastIndexOf(".");
+  if (lastDot < 0 || lastDot === name.length - 1) return "";
+  return name.slice(lastDot + 1).toLowerCase();
 }
 
 function normalizeFolder(p: string): string {

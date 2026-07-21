@@ -24,6 +24,7 @@ export class PlaylistSettingsModal extends Modal {
     const originalVol = vol; // for restoring on Cancel
     let loop = !!pref.loop;
     let shuffle = !!pref.shuffle;
+	let insertExclusiveButton = false;
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -80,10 +81,25 @@ export class PlaylistSettingsModal extends Modal {
 
     new Setting(contentEl)
       .setName("Insert playlist button")
-      .setDesc("Insert a Markdown button for this playlist into the active note.")
+      .setDesc(
+        "Inserts a button to your note to start a playlist directly.",
+      )
+      .addToggle((tg) => {
+        tg.setValue(insertExclusiveButton).onChange((v) => {
+          insertExclusiveButton = v;
+        });
+
+        tg.toggleEl.setAttr(
+          "aria-label",
+          "Stop all other sounds before starting this playlist",
+        );
+      })
       .addButton((b) =>
         b.setButtonText("Insert button").onClick(() => {
-          this.plugin.insertPlaylistButtonIntoActiveNote(this.folderPath);
+          this.plugin.insertPlaylistButtonIntoActiveNote(
+            this.folderPath,
+            insertExclusiveButton,
+          );
         }),
       );
 

@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Platform, PluginSettingTab, Setting } from "obsidian";
 import type TTRPGSoundboardPlugin from "./main";
 import { StyleSettingsModal } from "./ui/StyleSettingsModal";
 
@@ -20,8 +20,12 @@ export interface SoundboardStyleSettings {
 export type ArrangementGroup = "sounds" | "ambience" | "playlists";
 
 export type TileSizingMode = "fixed-height" | "aspect-ratio";
+export type SoundLibraryLocation = "vault" | "external";
 
 export interface SoundboardSettings {
+  soundLibraryLocation: SoundLibraryLocation;
+  externalSoundFolderPath: string;
+
   rootFolder: string; // e.g. "Soundbar"
   includeRootFiles: boolean; // false = only subfolders
   folders: string[]; // legacy fallback when rootFolder is empty
@@ -38,6 +42,7 @@ export interface SoundboardSettings {
   tileSizingMode: TileSizingMode; // fixed height or aspect ratio based sizing
   tileAspectRatioPreset: string; // e.g. "16:9"
   tileHeightPx: number; // tile height in px
+  limitTileTitlesToOneLine: boolean; // truncate long tile titles with "..."
   noteIconSizePx: number; // max height for note button thumbnails in px
   toolbarFourFolders: boolean; // if true, show 4 folder dropdowns instead of 2
   showAllFoldersOption: boolean; // if false, hide "All folders" from toolbar dropdowns
@@ -58,6 +63,9 @@ export interface SoundboardSettings {
 }
 
 export const DEFAULT_SETTINGS: SoundboardSettings = {
+  soundLibraryLocation: "vault",
+  externalSoundFolderPath: "",
+
   rootFolder: "Soundbar",
   includeRootFiles: false,
   folders: ["TTRPG Sounds"],
@@ -74,6 +82,7 @@ export const DEFAULT_SETTINGS: SoundboardSettings = {
   tileSizingMode: "fixed-height",
   tileAspectRatioPreset: "16:9",
   tileHeightPx: 100,
+  limitTileTitlesToOneLine: false,
   noteIconSizePx: 40,
   toolbarFourFolders: false,
   showAllFoldersOption: true,
@@ -131,6 +140,70 @@ export class SoundboardSettingTab extends PluginSettingTab {
     // Library
     new Setting(containerEl).setName("Library").setHeading();
 
+    let externalFolderSetting: Setting | undefined;
+    let externalReloadSetting: Setting | undefined;
+
+    new Setting(containerEl)
+      .setName("Sound library location")
+      .setDesc(
+        "Choose whether sounds are read from this vault or from a shared external folder. External folders are available on desktop only.",
+      )
+      .addDropdown((dd) => {
+        dd.addOption("vault", "Inside this vault");
+        dd.addOption("external", "External folder (desktop only)");
+        dd.setValue(this.plugin.settings.soundLibraryLocation);
+        dd.setDisabled(!Platform.isDesktopApp);
+        dd.onChange((v) => {
+          if (v !== "vault" && v !== "external") return;
+		  
+          this.plugin.settings.soundLibraryLocation = v;
+          externalFolderSetting?.setDisabled(
+            !Platform.isDesktopApp || v !== "external",
+          );
+          externalReloadSetting?.setDisabled(
+            !Platform.isDesktopApp || v !== "external",
+          );
+
+          void this.plugin.saveSettings();
+        });
+      });
+
+    externalFolderSetting = new Setting(containerEl)
+      .setName("External sound folder")
+      .setDesc(
+        "Absolute desktop path to the shared audio library. Use the Reload audio list command after changing files outside Obsidian.",
+      )
+      .addText((ti) =>
+        ti
+          .setPlaceholder("D:\\TTRPG Audio")
+          .setValue(this.plugin.settings.externalSoundFolderPath)
+          .onChange((v) => {
+            this.plugin.settings.externalSoundFolderPath = v.trim();
+            void this.plugin.saveSettings();
+          }),
+      );
+
+    externalFolderSetting.setDisabled(
+      !Platform.isDesktopApp ||
+        this.plugin.settings.soundLibraryLocation !== "external",
+    );
+	
+    externalReloadSetting = new Setting(containerEl)
+      .setName("Load / reload external sound library")
+      .setDesc(
+        "Loads the configured external folder once. Use this after changing the path or after adding files outside Obsidian.",
+      )
+      .addButton((b) =>
+        b.setButtonText("Load external library").onClick(() => {
+          void this.plugin.rescan();
+        }),
+      );
+
+    externalReloadSetting.setDisabled(
+      !Platform.isDesktopApp ||
+        this.plugin.settings.soundLibraryLocation !== "external",
+    );
+
     new Setting(containerEl)
       .setName("Root folder")
       .setDesc("Only subfolders under this folder are listed as options.")
@@ -141,7 +214,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
           .onChange((v) => {
             this.plugin.settings.rootFolder = v.trim();
             void this.plugin.saveSettings();
-            this.plugin.rescan();
+            void this.plugin.rescan();
           }),
       );
 
@@ -156,7 +229,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
           .onChange((v) => {
             this.plugin.settings.includeRootFiles = v;
             void this.plugin.saveSettings();
-            this.plugin.rescan();
+            void this.plugin.rescan();
           }),
       );
 
@@ -172,7 +245,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
               .map((s) => s.trim())
               .filter(Boolean);
             void this.plugin.saveSettings();
-            this.plugin.rescan();
+            void this.plugin.rescan();
           }),
       );
 
@@ -188,7 +261,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
               .map((s) => s.trim().replace(/^\./, ""))
               .filter(Boolean);
             void this.plugin.saveSettings();
-            this.plugin.rescan();
+            void this.plugin.rescan();
           }),
       );
 
@@ -506,6 +579,21 @@ export class SoundboardSettingTab extends PluginSettingTab {
       );
 	  
     tileHeightSetting.setDisabled(this.plugin.settings.tileSizingMode !== "fixed-height");
+	
+    new Setting(containerEl)
+      .setName("Limit tile titles to one line")
+      .setDesc(
+        'Long titles are shortened to fit the tile and end with "...".',
+      )
+      .addToggle((tg) =>
+        tg
+          .setValue(this.plugin.settings.limitTileTitlesToOneLine)
+          .onChange((v) => {
+            this.plugin.settings.limitTileTitlesToOneLine = v;
+            void this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Note button icon size (px)")
@@ -536,7 +624,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
           .onChange((v) => {
             this.plugin.settings.thumbnailFolderPath = v.trim();
             void this.plugin.saveSettings();
-            this.plugin.rescan();
+            void this.plugin.rescan();
             this.plugin.refreshViews();
           }),
       );
@@ -553,7 +641,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
           this.plugin.settings.thumbnailFolderEnabled = v;
           void this.plugin.saveSettings();
           thumbFolderSetting.setDisabled(!v);
-          this.plugin.rescan();
+          void this.plugin.rescan();
           this.plugin.refreshViews();
         }),
       );

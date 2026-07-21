@@ -3,6 +3,12 @@ import type TTRPGSoundboardPlugin from "../main";
 import { PerSoundSettingsModal } from "./PerSoundSettingsModal";
 import { PlaylistSettingsModal } from "./PlaylistSettingsModal";
 import { LibraryModel, PlaylistInfo } from "../util/fileDiscovery";
+import {
+  findExternalSiblingImage,
+  getLibraryImageResourceUrl,
+  isExternalAudioFile,
+  LibraryFile,
+} from "../util/externalFiles";
 
 export const VIEW_TYPE_TTRPG_SOUNDBOARD = "ttrpg-soundboard-view";
 
@@ -23,6 +29,8 @@ export default class SoundboardView extends ItemView {
   library?: LibraryModel;
   playingFiles = new Set<string>();
   private unsubEngine?: () => void;
+  private titleResizeObserver?: ResizeObserver;
+  private imageBlobUrls = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, plugin: TTRPGSoundboardPlugin) {
     super(leaf);
@@ -62,6 +70,9 @@ export default class SoundboardView extends ItemView {
     this.contentEl.removeClass("ttrpg-sb-view");
     this.unsubEngine?.();
     this.unsubEngine = undefined;
+    this.titleResizeObserver?.disconnect();
+    this.titleResizeObserver = undefined;
+	this.revokeImageBlobUrls();
   }
 
   getState(): ViewState {
@@ -168,7 +179,18 @@ export default class SoundboardView extends ItemView {
 
   render() {
     const { contentEl } = this;
+	this.titleResizeObserver?.disconnect();
+	this.revokeImageBlobUrls();
     contentEl.empty();
+	
+    this.titleResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const titleEl = entry.target;
+        if (titleEl instanceof HTMLElement) {
+          this.updateTileTitle(titleEl);
+        }
+      }
+    });
 
     const library = this.library;
 
@@ -420,7 +442,7 @@ export default class SoundboardView extends ItemView {
     const isAmbience = this.plugin.isAmbiencePath(file.path);
     if (isAmbience) card.addClass("ambience");
 
-    card.createDiv({ cls: "ttrpg-sb-title", text: file.basename });
+    this.createTileTitle(card, file.basename);
 
     const tile = card.createEl("button", {
       cls: "ttrpg-sb-tile",
@@ -430,7 +452,7 @@ export default class SoundboardView extends ItemView {
 
     const thumb = this.findThumbFor(file);
     if (thumb) {
-      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(thumb)})`;
+      this.setTileBackgroundImage(tile, thumb);
     }
 
     const pref = this.plugin.getSoundPref(file.path);
@@ -601,12 +623,24 @@ export default class SoundboardView extends ItemView {
     }
   }
 
-  private findThumbFor(file: TFile): TFile | null {
+  private findThumbFor(file: LibraryFile): LibraryFile | null {
     const base = file.basename;
+	
+    if (isExternalAudioFile(file)) {
+      return findExternalSiblingImage(file, [
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+      ]);
+    }
 
     if (this.plugin.settings.thumbnailFolderEnabled && this.plugin.settings.thumbnailFolderPath.trim()) {
       const folder = normalizePath(this.plugin.settings.thumbnailFolderPath.trim());
-      const candidates = ["png", "jpg", "jpeg", "webp"].map((ext) => `${folder}/${base}.${ext}`);
+      const candidates = ["png", "jpg", "jpeg", "webp", "gif"].map(
+        (ext) => `${folder}/${base}.${ext}`,
+      );
       for (const p of candidates) {
         const af = this.app.vault.getAbstractFileByPath(p);
         if (af && af instanceof TFile) return af;
@@ -615,7 +649,9 @@ export default class SoundboardView extends ItemView {
     }
 
     const parent = file.parent?.path ?? "";
-    const candidates = ["png", "jpg", "jpeg", "webp"].map((ext) => `${parent}/${base}.${ext}`);
+    const candidates = ["png", "jpg", "jpeg", "webp", "gif"].map(
+      (ext) => `${parent}/${base}.${ext}`,
+    );
     for (const p of candidates) {
       const af = this.app.vault.getAbstractFileByPath(p);
       if (af && af instanceof TFile) return af;
@@ -625,14 +661,14 @@ export default class SoundboardView extends ItemView {
 
   private renderPlaylistCard(container: HTMLElement, pl: PlaylistInfo) {
     const card = container.createDiv({ cls: "ttrpg-sb-card playlist" });
-    card.createDiv({ cls: "ttrpg-sb-title", text: pl.name });
+    this.createTileTitle(card, pl.name);
 
     const tile = card.createEl("button", {
       cls: "ttrpg-sb-tile playlist",
       attr: { "aria-label": pl.name },
     });
     if (pl.cover) {
-      tile.style.backgroundImage = `url(${this.app.vault.getResourcePath(pl.cover)})`;
+      this.setTileBackgroundImage(tile, pl.cover);
     }
 
     tile.onclick = () => {
@@ -743,5 +779,98 @@ export default class SoundboardView extends ItemView {
       const active = this.plugin.isPlaylistActive(p);
       r.toggleClass("playing", active);
     });
+  }
+  
+  private revokeImageBlobUrls() {
+    for (const url of this.imageBlobUrls) {
+      URL.revokeObjectURL(url);
+    }
+    this.imageBlobUrls.clear();
+  }
+
+  private setTileBackgroundImage(
+    tile: HTMLButtonElement,
+    imageFile: LibraryFile,
+  ) {
+    void getLibraryImageResourceUrl(this.app, imageFile)
+      .then((url) => {
+        if (url.startsWith("blob:")) {
+          this.imageBlobUrls.add(url);
+        }
+
+        if (!tile.isConnected) {
+          if (url.startsWith("blob:")) {
+            this.imageBlobUrls.delete(url);
+            URL.revokeObjectURL(url);
+          }
+          return;
+        }
+
+        const safeUrl = url.replace(/"/g, "%22");
+        tile.style.backgroundImage = `url("${safeUrl}")`;
+      })
+      .catch((err: unknown) => {
+        console.error(
+          "TTRPG Soundboard: failed to load thumbnail image:",
+          err,
+        );
+      });
+  }
+  
+  private createTileTitle(parent: HTMLElement, fullTitle: string): HTMLElement {
+    const titleEl = parent.createDiv({
+      cls: "ttrpg-sb-title",
+      text: fullTitle,
+    });
+
+    titleEl.dataset.fullTitle = fullTitle;
+    titleEl.title = fullTitle;
+
+    this.titleResizeObserver?.observe(titleEl);
+
+    window.requestAnimationFrame(() => {
+      if (titleEl.isConnected) {
+        this.updateTileTitle(titleEl);
+      }
+    });
+
+    return titleEl;
+  }
+
+  private updateTileTitle(titleEl: HTMLElement) {
+    const fullTitle = titleEl.dataset.fullTitle ?? "";
+    titleEl.setText(fullTitle);
+
+    if (!this.plugin.settings.limitTileTitlesToOneLine) {
+      titleEl.removeClass("ttrpg-sb-title-truncated");
+      return;
+    }
+
+    titleEl.addClass("ttrpg-sb-title-truncated");
+
+    if (titleEl.scrollWidth <= titleEl.clientWidth) {
+      return;
+    }
+
+    const suffix = "...";
+    let low = 0;
+    let high = fullTitle.length;
+    let best = suffix;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = `${fullTitle.slice(0, middle).trimEnd()}${suffix}`;
+
+      titleEl.setText(candidate);
+
+      if (titleEl.scrollWidth <= titleEl.clientWidth) {
+        best = candidate;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+
+    titleEl.setText(best);
   }
 }

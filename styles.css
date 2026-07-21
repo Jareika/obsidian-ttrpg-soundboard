@@ -147,6 +147,14 @@
   word-break: break-word;
 }
 
+/* Enabled through the "Limit tile titles to one line" setting.
+   The actual "..."" truncation is calculated in SoundboardView.ts. */
+.ttrpg-sb-title.ttrpg-sb-title-truncated {
+  white-space: nowrap;
+  overflow: hidden;
+  word-break: normal;
+}
+
 /* Thumbnail tiles */
 
 .ttrpg-sb-tile {

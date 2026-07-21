@@ -84,11 +84,16 @@ You can trigger sounds directly from notes.
 Single sound:
 - Text button:
   - `[Rain](ttrpg-sound:Soundbar/Dorf/Ambience/Rain.ogg)`
+- Exclusive sound button:
+  - `[Battle Theme](ttrpg-exclusive-sound:Soundbar/Music/Battle Theme.ogg)`
+  - Stops all currently playing sounds before starting this sound.
 - Optional image button:
   - `[Rain](ttrpg-sound:Soundbar/Dorf/Ambience/Rain.ogg "Soundbar/Thumbnails/rain.png")`
 
 Playlist:
 - `[BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight#1-4)`
+- `[BossFight](ttrpg-exclusive-playlist:Soundbar/Dungeon/BossFight#1-4)`
+  - Stops all currently playing sounds before starting the playlist.
 - `#N` plays a single track, `#A-B` plays a range.
 
 In Reading View, these links are replaced by clickable buttons.

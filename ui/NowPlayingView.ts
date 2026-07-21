@@ -1,6 +1,7 @@
-import { ItemView, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, setIcon, WorkspaceLeaf } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
 import type { PlaylistInfo } from "../util/fileDiscovery";
+import type { LibraryFile } from "../util/externalFiles";
 
 export const VIEW_TYPE_TTRPG_NOWPLAYING = "ttrpg-soundboard-nowplaying";
 
@@ -71,8 +72,7 @@ export default class NowPlayingView extends ItemView {
   }
 
   private renderCard(grid: HTMLElement, path: string) {
-    const af = this.app.vault.getAbstractFileByPath(path);
-    const file = af instanceof TFile ? af : null;
+    const file = this.plugin.findLibraryFileByPath(path);
 
     const name = file?.basename ?? path.split("/").pop() ?? path;
 
@@ -104,7 +104,7 @@ export default class NowPlayingView extends ItemView {
 
   private renderSingleControls(
     controls: HTMLElement,
-    file: TFile | null,
+    file: LibraryFile | null,
     path: string,
     isPaused: boolean,
   ) {
@@ -154,7 +154,7 @@ export default class NowPlayingView extends ItemView {
     controls: HTMLElement,
     playlist: PlaylistInfo,
     playlistPath: string,
-    file: TFile | null,
+    file: LibraryFile | null,
     isPaused: boolean,
   ) {
     const prevBtn = controls.createEl("button", {

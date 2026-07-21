@@ -1,4 +1,9 @@
-import { App, TFile } from "obsidian";
+import { App } from "obsidian";
+import {
+  getLibraryFileResourcePath,
+  LibraryFile,
+  readLibraryFileBinary,
+} from "../util/externalFiles";
 
 export interface PlayOptions {
   volume?: number;
@@ -39,7 +44,7 @@ type WindowWithWebAudio = Window & { webkitAudioContext?: typeof AudioContext };
 
 interface PlaybackRecordBase {
   id: string;
-  file: TFile;
+  file: LibraryFile;
   loop: boolean;
   state: "playing" | "paused";
   lastVolume: number; // target per-track volume before global master volume
@@ -203,13 +208,13 @@ export class AudioEngine {
     }
   }
 
-  private isLargeFile(file: TFile): boolean {
+  private isLargeFile(file: LibraryFile): boolean {
     if (this.mediaElementThresholdBytes <= 0) return false;
     const size = file.stat?.size ?? 0;
     return size > this.mediaElementThresholdBytes;
   }
 
-  async loadBuffer(file: TFile): Promise<AudioBuffer> {
+  async loadBuffer(file: LibraryFile): Promise<AudioBuffer> {
     const key = file.path;
 
     if (this.maxCachedBytes > 0) {
@@ -220,7 +225,7 @@ export class AudioEngine {
       }
     }
 
-    const bin = await this.app.vault.readBinary(file);
+    const bin = await readLibraryFileBinary(this.app, file);
     await this.ensureContext();
     const ctx = this.ctx!;
     const arrBuf =
@@ -246,7 +251,7 @@ export class AudioEngine {
 
   // ===== Playback control =====
 
-  async play(file: TFile, opts: PlayOptions = {}) {
+  async play(file: LibraryFile, opts: PlayOptions = {}) {
     if (this.iosLockscreenCompatibilityMode) {
       return await this.playWithDirectMediaElement(file, opts);
     }
@@ -269,7 +274,7 @@ export class AudioEngine {
     return await this.playWithBuffer(file, opts);
   }
 
-  private async playWithBuffer(file: TFile, opts: PlayOptions = {}) {
+  private async playWithBuffer(file: LibraryFile, opts: PlayOptions = {}) {
     await this.ensureContext();
     const buffer = await this.loadBuffer(file);
     const ctx = this.ctx!;
@@ -348,14 +353,14 @@ export class AudioEngine {
     };
   }
 
-  private async playWithMediaElement(file: TFile, opts: PlayOptions = {}) {
+  private async playWithMediaElement(file: LibraryFile, opts: PlayOptions = {}) {
     await this.ensureContext();
     const ctx = this.ctx!;
     const id = this.createId();
 
     const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
-    element.src = this.app.vault.getResourcePath(file);
+    element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
     element.loop = !!opts.loop && loopDelaySeconds.length === 0;
 
@@ -434,11 +439,14 @@ export class AudioEngine {
     };
   }
 
-  private async playWithDirectMediaElement(file: TFile, opts: PlayOptions = {}) {
+  private async playWithDirectMediaElement(
+    file: LibraryFile,
+    opts: PlayOptions = {},
+  ) {
     const id = this.createId();
     const element = window.activeDocument.createElement("audio");
     element.preload = "auto";
-    element.src = this.app.vault.getResourcePath(file);
+    element.src = getLibraryFileResourcePath(this.app, file);
 
     const loop = !!opts.loop;
 	const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -552,7 +560,7 @@ export class AudioEngine {
     };
   }
 
-  async stopByFile(file: TFile, fadeOutMs = 0) {
+  async stopByFile(file: LibraryFile, fadeOutMs = 0) {
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path,
     );
@@ -566,7 +574,7 @@ export class AudioEngine {
     await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
   }
 
-  async preload(files: TFile[]) {
+  async preload(files: LibraryFile[]) {
     if (this.iosLockscreenCompatibilityMode) {
       return;
     }
@@ -586,7 +594,7 @@ export class AudioEngine {
    * Pause all currently playing instances of the given file.
    * If fadeOutMs > 0, a short fade-out is applied before pausing.
    */
-  async pauseByFile(file: TFile, fadeOutMs = 0) {
+  async pauseByFile(file: LibraryFile, fadeOutMs = 0) {
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path && p.state === "playing",
     );
@@ -670,7 +678,7 @@ export class AudioEngine {
    * Resume all paused instances of the given file.
    * If fadeInMs > 0, a short fade-in is applied from volume 0.
    */
-  async resumeByFile(file: TFile, fadeInMs = 0) {
+  async resumeByFile(file: LibraryFile, fadeInMs = 0) {
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path && p.state === "paused",
     );

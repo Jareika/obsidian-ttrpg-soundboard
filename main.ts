@@ -3,8 +3,13 @@ import { AudioEngine } from "./audio/AudioEngine";
 import SoundboardView, { VIEW_TYPE_TTRPG_SOUNDBOARD } from "./ui/SoundboardView";
 import NowPlayingView, { VIEW_TYPE_TTRPG_NOWPLAYING } from "./ui/NowPlayingView";
 import { SoundboardSettings, DEFAULT_SETTINGS, SoundboardSettingTab } from "./settings";
-import { LibraryModel, PlaylistInfo, buildLibrary } from "./util/fileDiscovery";
+import {
+  LibraryModel,
+  PlaylistInfo,
+  buildLibrary,
+} from "./util/fileDiscovery";
 import { QuickPlayModal, QuickPlayItem } from "./ui/QuickPlayModal";
+import { LibraryFile } from "./util/externalFiles";
 
 interface SoundPrefs {
   loop?: boolean;
@@ -113,6 +118,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   private volumeSliders = new Map<string, Set<HTMLInputElement>>();
 
   private rescanTimer: number | null = null;
+  private rescanRequestId = 0;
 
   // Duration metadata loading queue
   private pendingDuration = new Map<string, DurationJob>();
@@ -212,7 +218,9 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.addCommand({
       id: "reload-audio-list",
       name: "Reload audio list",
-      callback: () => this.rescan(),
+      callback: () => {
+        void this.rescan();
+      },
     });
 
     this.addCommand({
@@ -273,7 +281,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     });
 
     // Initial library build
-    this.rescan();
+    void this.rescan();
   }
 
   onunload() {
@@ -381,8 +389,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       .filter((v) => Number.isFinite(v) && v >= 0);
   }
 
-  async prepareBeforeStartingSingle(file: TFile): Promise<void> {
-    if (this.settings.exclusivePlayback) {
+  async prepareBeforeStartingSingle(file: TFile, forceExclusive = false): Promise<void> {
+    if (forceExclusive || this.settings.exclusivePlayback) {
       await this.engine.stopAll(this.settings.defaultFadeOutMs);
     } else if (!this.settings.allowOverlap) {
       await this.engine.stopByFile(file, 0);
@@ -426,20 +434,64 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
   }
 
-  rescan() {
-    const thumbFolder =
-      this.settings.thumbnailFolderEnabled && this.settings.thumbnailFolderPath.trim()
-        ? this.settings.thumbnailFolderPath.trim()
-        : undefined;
+  async rescan() {
+    const requestId = ++this.rescanRequestId;
 
-    this.library = buildLibrary(this.app, {
-      rootFolder: this.settings.rootFolder,
-      foldersLegacy: this.settings.rootFolder?.trim() ? undefined : this.settings.folders,
-      exts: this.settings.extensions,
-      includeRootFiles: this.settings.includeRootFiles,
-      thumbnailFolder: thumbFolder,
-    });
-    this.refreshViews();
+    try {
+      if (
+        this.settings.soundLibraryLocation === "external" &&
+        !this.settings.externalSoundFolderPath.trim()
+      ) {
+        this.library = {
+          topFolders: [],
+          byFolder: {},
+          allSingles: [],
+        };
+        this.refreshViews();
+        return;
+      }
+
+      const thumbFolder =
+        this.settings.thumbnailFolderEnabled &&
+        this.settings.thumbnailFolderPath.trim()
+          ? this.settings.thumbnailFolderPath.trim()
+          : undefined;
+
+      const library = await buildLibrary(this.app, {
+        location: this.settings.soundLibraryLocation,
+        rootFolder:
+          this.settings.soundLibraryLocation === "vault"
+            ? this.settings.rootFolder
+            : undefined,
+        externalRootFolder:
+          this.settings.soundLibraryLocation === "external"
+            ? this.settings.externalSoundFolderPath
+            : undefined,
+        foldersLegacy: this.settings.rootFolder?.trim()
+          ? undefined
+          : this.settings.folders,
+        exts: this.settings.extensions,
+        includeRootFiles: this.settings.includeRootFiles,
+        thumbnailFolder: thumbFolder,
+      });
+
+      if (requestId !== this.rescanRequestId) return;
+
+      this.library = library;
+      this.refreshViews();
+    } catch (err) {
+      if (requestId !== this.rescanRequestId) return;
+
+      const error = unknownToError(err);
+      console.error(
+        "TTRPG Soundboard: failed to reload audio library:",
+        error,
+      );
+
+      new Notice(
+        `TTRPG Soundboard: Could not load sound library. ${error.message}`,
+      );
+    }
   }
 
   refreshViews() {
@@ -471,25 +523,34 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   rescanDebounced(delay = 300) {
     if (this.rescanTimer) window.clearTimeout(this.rescanTimer);
-    this.rescanTimer = window.setTimeout(() => this.rescan(), delay);
+    this.rescanTimer = window.setTimeout(() => {
+      void this.rescan();
+    }, delay);
   }
 
   // ===== Per-sound / per-playlist prefs =====
+  
+  getPreferenceKey(path: string): string {
+    const location = this.settings.soundLibraryLocation;
+    return `${location}:${path}`;
+  }
 
   getSoundPref(path: string): SoundPrefs {
-    return (this.soundPrefs[path] ??= {});
+    const key = this.getPreferenceKey(path);
+    return (this.soundPrefs[key] ??= {});
   }
 
   setSoundPref(path: string, pref: SoundPrefs) {
-    this.soundPrefs[path] = pref;
+    this.soundPrefs[this.getPreferenceKey(path)] = pref;
   }
 
   getPlaylistPref(folderPath: string): PlaylistPrefs {
-    return (this.playlistPrefs[folderPath] ??= {});
+    const key = this.getPreferenceKey(folderPath);
+    return (this.playlistPrefs[key] ??= {});
   }
 
   setPlaylistPref(folderPath: string, pref: PlaylistPrefs) {
-    this.playlistPrefs[folderPath] = pref;
+    this.playlistPrefs[this.getPreferenceKey(folderPath)] = pref;
   }
 
   // ===== Loop defaults (Ambience auto-loop) =====
@@ -525,8 +586,8 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     this.applyCssVars();
   }
 
-  private getAllAudioFilesInLibrary(): TFile[] {
-    const unique = new Map<string, TFile>();
+  private getAllAudioFilesInLibrary(): LibraryFile[] {
+    const unique = new Map<string, LibraryFile>();
     for (const f of this.library.allSingles) unique.set(f.path, f);
     for (const top of this.library.topFolders) {
       const fc = this.library.byFolder[top];
@@ -536,6 +597,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       }
     }
     return [...unique.values()];
+  }
+  
+  findLibraryFileByPath(path: string): LibraryFile | null {
+    return (
+      this.getAllAudioFilesInLibrary().find((file) => file.path === path) ??
+      null
+    );
   }
 
   // ===== Ambience + volume helpers =====
@@ -877,7 +945,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     return null;
   }
 
-  async startPlaylist(pl: PlaylistInfo, selectionIndices?: number[]): Promise<void> {
+  async startPlaylist(
+    pl: PlaylistInfo,
+    selectionIndices?: number[],
+    forceExclusive = false,
+  ): Promise<void> {
     const trackCount = pl.tracks.length;
     if (trackCount === 0) return;
 
@@ -887,11 +959,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     if (!indices.length) return;
 
     const pref = this.getPlaylistPref(pl.path);
+	const fadeOutMs = pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
 
     st.indices = pref.shuffle ? this.shuffleArray(indices) : indices;
     st.position = 0;
-
-    const fadeOutMs = pref.fadeOutMs ?? this.settings.defaultFadeOutMs;
 
     if (st.handle) {
       try {
@@ -900,6 +971,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         // Ignore errors when stopping an already-stopped handle.
       }
       st.handle = undefined;
+    }
+	
+    if (forceExclusive) {
+      await this.engine.stopAll(fadeOutMs);
     }
 
     await this.playPlaylistIndex(pl, st, 0);
@@ -1237,7 +1312,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     return [];
   }
 
-  private async handlePlaylistButtonClick(playlistPath: string, rangeSpec?: string) {
+  private async handlePlaylistButtonClick(
+    playlistPath: string,
+    rangeSpec?: string,
+    forceExclusive = false,
+  ) {
     const pl = this.findPlaylistByPath(playlistPath);
     if (!pl) {
       new Notice(`TTRPG Soundboard: playlist not found: ${playlistPath}`);
@@ -1250,7 +1329,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return;
     }
 
-    await this.startPlaylist(pl, indices);
+    await this.startPlaylist(pl, indices, forceExclusive);
   }
 
   // ===== Note buttons inside markdown =====
@@ -1258,14 +1337,16 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   /**
    * Transform markdown patterns like:
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg)
+   *   [Battle Theme](ttrpg-exclusive-sound:Folder/Sub/BattleTheme.ogg)
    *   [Rain](ttrpg-sound:Folder/Sub/MyFile.ogg "thumbs/rain.png")
    *   [BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight#1-4)
+   *   [BossFight](ttrpg-exclusive-playlist:Soundbar/Dungeon/BossFight#1-4)
    * into clickable buttons that trigger playback.
    */
   private processNoteButtons(root: HTMLElement) {
 	const doc = root.doc ?? window.activeDocument;
     const anchors = root.querySelectorAll<HTMLAnchorElement>(
-      'a[href^="ttrpg-sound:"], a[href^="ttrpg-playlist:"]',
+      'a[href^="ttrpg-sound:"], a[href^="ttrpg-exclusive-sound:"], a[href^="ttrpg-playlist:"], a[href^="ttrpg-exclusive-playlist:"]',
     );
 
     for (const a of Array.from(anchors)) {
@@ -1274,13 +1355,21 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
       const label = a.textContent || "";
 
-      if (hrefAttr.startsWith("ttrpg-sound:")) {
-        const raw = hrefAttr.slice("ttrpg-sound:".length);
+      const isExclusiveSound = hrefAttr.startsWith("ttrpg-exclusive-sound:");
+
+      if (hrefAttr.startsWith("ttrpg-sound:") || isExclusiveSound) {
+        const prefix = isExclusiveSound
+          ? "ttrpg-exclusive-sound:"
+          : "ttrpg-sound:";
+        const raw = hrefAttr.slice(prefix.length);
         const path = raw.replace(/^\/+/, "");
 
         const button = doc.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
+        if (isExclusiveSound) {
+          button.dataset.exclusive = "true";
+        }
 
         const thumbPath = a.getAttribute("title")?.trim();
         if (thumbPath) {
@@ -1302,19 +1391,29 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         button.onclick = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          void this.handleNoteButtonClick(path);
+          void this.handleNoteButtonClick(path, isExclusiveSound);
         };
 
         this.noteButtons.add(button);
         a.replaceWith(button);
-      } else if (hrefAttr.startsWith("ttrpg-playlist:")) {
-        const raw = hrefAttr.slice("ttrpg-playlist:".length);
+      } else {
+        const isExclusivePlaylist = hrefAttr.startsWith("ttrpg-exclusive-playlist:");
+        const prefix = isExclusivePlaylist
+          ? "ttrpg-exclusive-playlist:"
+          : "ttrpg-playlist:";
+
+        if (!hrefAttr.startsWith(prefix)) continue;
+
+        const raw = hrefAttr.slice(prefix.length);
         const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
         const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
         const button = doc.createElement("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.playlistPath = playlistPath;
+        if (isExclusivePlaylist) {
+          button.dataset.exclusive = "true";
+        }
         if (rangeSpec) {
           button.dataset.playlistRange = rangeSpec.trim();
         }
@@ -1323,7 +1422,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         button.onclick = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          void this.handlePlaylistButtonClick(playlistPath, rangeSpec);
+          void this.handlePlaylistButtonClick(
+            playlistPath,
+            rangeSpec,
+            isExclusivePlaylist,
+          );
         };
 
         this.noteButtons.add(button);
@@ -1332,7 +1435,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
 
     const pattern =
-      /\[([^\]]+)\]\((ttrpg-sound|ttrpg-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
+      /\[([^\]]+)\]\((ttrpg-sound|ttrpg-exclusive-sound|ttrpg-playlist|ttrpg-exclusive-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
 
     const nodeFilter = doc.defaultView?.NodeFilter ?? NodeFilter;
     const walker = doc.createTreeWalker(root, nodeFilter.SHOW_TEXT);
@@ -1366,11 +1469,15 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           frag.appendChild(doc.createTextNode(before));
         }
 
-        if (kind === "ttrpg-sound") {
+        if (kind === "ttrpg-sound" || kind === "ttrpg-exclusive-sound") {
           const path = rawPath.replace(/^\/+/, "");
+		  const isExclusiveSound = kind === "ttrpg-exclusive-sound";
           const button = doc.createElement("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.path = path;
+          if (isExclusiveSound) {
+            button.dataset.exclusive = "true";
+          }
 
           const thumbPath = thumbPathRaw?.trim();
           if (thumbPath) {
@@ -1392,18 +1499,22 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           button.onclick = (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
-            void this.handleNoteButtonClick(path);
+            void this.handleNoteButtonClick(path, isExclusiveSound);
           };
 
           this.noteButtons.add(button);
           frag.appendChild(button);
         } else {
+          const isExclusivePlaylist = kind === "ttrpg-exclusive-playlist";
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
           const button = doc.createElement("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.playlistPath = playlistPath;
+          if (isExclusivePlaylist) {
+            button.dataset.exclusive = "true";
+          }
           if (rangeSpec) {
             button.dataset.playlistRange = rangeSpec.trim();
           }
@@ -1412,7 +1523,11 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           button.onclick = (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
-            void this.handlePlaylistButtonClick(playlistPath, rangeSpec);
+            void this.handlePlaylistButtonClick(
+              playlistPath,
+              rangeSpec,
+              isExclusivePlaylist,
+            );
           };
 
           this.noteButtons.add(button);
@@ -1435,14 +1550,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     }
   }
 
-  private async handleNoteButtonClick(path: string) {
-    const af = this.app.vault.getAbstractFileByPath(path);
-    if (!(af instanceof TFile)) {
+  private async handleNoteButtonClick(path: string, forceExclusive = false) {
+    const file = this.findLibraryFileByPath(path);
+    if (!file) {
       new Notice(`TTRPG Soundboard: file not found: ${path}`);
       return;
     }
 
-    const file = af;
     const pref = this.getSoundPref(path);
     const isAmb = this.isAmbiencePath(path);
     const baseVol = pref.volume ?? 1;
@@ -1455,7 +1569,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
     if (playing.has(path)) {
       await this.engine.stopByFile(file, pref.fadeOutMs ?? this.settings.defaultFadeOutMs);
     } else {
-      await this.prepareBeforeStartingSingle(file);
+      await this.prepareBeforeStartingSingle(file, forceExclusive);
       await this.engine.play(file, {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
@@ -1495,7 +1609,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
   // ===== Insert buttons into active note (from settings modals) =====
 
-  insertSoundButtonIntoActiveNote(filePath: string) {
+  insertSoundButtonIntoActiveNote(filePath: string, exclusive = false) {
     const mdView = this.lastMarkdownView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!mdView) {
       new Notice("No active editor to insert button.");
@@ -1508,14 +1622,15 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       return;
     }
 
-    const af = this.app.vault.getAbstractFileByPath(filePath);
-    const label = af instanceof TFile ? af.basename : filePath.split("/").pop() ?? filePath;
+    const file = this.findLibraryFileByPath(filePath);
+    const label = file?.basename ?? filePath.split("/").pop() ?? filePath;
 
-    const text = `[${label}](ttrpg-sound:${filePath})`;
+    const scheme = exclusive ? "ttrpg-exclusive-sound" : "ttrpg-sound";
+    const text = `[${label}](${scheme}:${filePath})`;
     editor.replaceSelection(text);
   }
 
-  insertPlaylistButtonIntoActiveNote(playlistPath: string) {
+  insertPlaylistButtonIntoActiveNote(playlistPath: string, exclusive = false) {
     const mdView = this.lastMarkdownView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!mdView) {
       new Notice("No active editor to insert button.");
@@ -1542,7 +1657,10 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
     const label = pl.name;
     const spec = count === 1 ? "1" : `1-${count}`;
-    const text = `[${label}](ttrpg-playlist:${playlistPath}#${spec})`;
+    const scheme = exclusive
+      ? "ttrpg-exclusive-playlist"
+      : "ttrpg-playlist";
+    const text = `[${label}](${scheme}:${playlistPath}#${spec})`;
     editor.replaceSelection(text);
   }
 }

@@ -30,6 +30,7 @@ export class PerSoundSettingsModal extends Modal {
     let loopDelayStr = Array.isArray(pref.loopDelaySeconds)
       ? pref.loopDelaySeconds.join(", ")
       : "";
+    let insertExclusiveButton = false;
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -107,10 +108,26 @@ export class PerSoundSettingsModal extends Modal {
 
     new Setting(contentEl)
       .setName("Insert note button")
-      .setDesc("Insert a Markdown button for this sound into the active note.")
+      .setDesc(
+        "Inserts a button to your note to play a sound directly.",
+      )
+      .addToggle((tg) => {
+        tg.setValue(insertExclusiveButton).onChange((v) => {
+          insertExclusiveButton = v;
+        });
+
+
+        tg.toggleEl.setAttr(
+          "aria-label",
+          "Stop all other sounds before starting this sound",
+        );
+      })
       .addButton((b) =>
         b.setButtonText("Insert button").onClick(() => {
-          this.plugin.insertSoundButtonIntoActiveNote(this.filePath);
+          this.plugin.insertSoundButtonIntoActiveNote(
+            this.filePath,
+            insertExclusiveButton,
+          );
         }),
       );
 
