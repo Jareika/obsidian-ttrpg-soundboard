@@ -1378,7 +1378,6 @@ export default class TTRPGSoundboardPlugin extends Plugin {
             const img = button.createEl("img");
             img.src = this.app.vault.getResourcePath(af);
             img.alt = label;
-            button.appendChild(img);
             button.title = label;
             button.classList.add("ttrpg-sb-note-thumb");
           } else {
@@ -1419,7 +1418,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         }
         button.textContent = label || playlistPath;
 
-        button.onclick = (ev) => {
+        button.onclick = (ev: MouseEvent) => {
           ev.preventDefault();
           ev.stopPropagation();
           void this.handlePlaylistButtonClick(
@@ -1455,26 +1454,30 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       const parent = textNode.parentElement;
       if (!parent) continue;
 
-      const original = textNode.nodeValue ?? "";
+       const original = textNode.nodeValue ?? "";
       let lastIndex = 0;
-     const frag = createFragment();
 
       pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = pattern.exec(original)) !== null) {
         const [full, label, kind, rawPath, thumbPathRaw] = match;
+
         const before = original.slice(lastIndex, match.index);
         if (before) {
-          frag.appendChild(doc.createTextNode(before));
+          parent.insertBefore(doc.createTextNode(before), textNode);
         }
 
         if (kind === "ttrpg-sound" || kind === "ttrpg-exclusive-sound") {
           const path = rawPath.replace(/^\/+/, "");
-		  const isExclusiveSound = kind === "ttrpg-exclusive-sound";
-          const button = a.createEl("button");
+          const isExclusiveSound = kind === "ttrpg-exclusive-sound";
+
+          const button = parent.createEl("button");
+          parent.insertBefore(button, textNode);
+
           button.classList.add("ttrpg-sb-stop");
           button.dataset.path = path;
+
           if (isExclusiveSound) {
             button.dataset.exclusive = "true";
           }
@@ -1482,11 +1485,13 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           const thumbPath = thumbPathRaw?.trim();
           if (thumbPath) {
             const af = this.app.vault.getAbstractFileByPath(thumbPath);
+
             if (af instanceof TFile) {
+              // createEl() already appends the image to the button.
               const img = button.createEl("img");
               img.src = this.app.vault.getResourcePath(af);
               img.alt = label;
-              button.appendChild(img);
+
               button.title = label;
               button.classList.add("ttrpg-sb-note-thumb");
             } else {
@@ -1496,33 +1501,38 @@ export default class TTRPGSoundboardPlugin extends Plugin {
             button.textContent = label;
           }
 
-          button.onclick = (ev) => {
+          button.onclick = (ev: MouseEvent) => {
             ev.preventDefault();
             ev.stopPropagation();
             void this.handleNoteButtonClick(path, isExclusiveSound);
           };
 
           this.noteButtons.add(button);
-          frag.appendChild(button);
         } else {
           const isExclusivePlaylist = kind === "ttrpg-exclusive-playlist";
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
-          const button = a.createEl("button");
+          const button = parent.createEl("button");
+          parent.insertBefore(button, textNode);
+
           button.classList.add("ttrpg-sb-stop");
           button.dataset.playlistPath = playlistPath;
+
           if (isExclusivePlaylist) {
             button.dataset.exclusive = "true";
           }
+
           if (rangeSpec) {
             button.dataset.playlistRange = rangeSpec.trim();
           }
-          button.textContent = label;
 
-          button.onclick = (ev) => {
+          button.textContent = label || playlistPath;
+
+          button.onclick = (ev: MouseEvent) => {
             ev.preventDefault();
             ev.stopPropagation();
+
             void this.handlePlaylistButtonClick(
               playlistPath,
               rangeSpec,
@@ -1531,18 +1541,21 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           };
 
           this.noteButtons.add(button);
-          frag.appendChild(button);
         }
 
         lastIndex = match.index + full.length;
       }
 
-      const after = original.slice(lastIndex);
-      if (after) {
-        frag.appendChild(doc.createTextNode(after));
+      if (lastIndex === 0) {
+        continue;
       }
 
-      parent.replaceChild(frag, textNode);
+      const after = original.slice(lastIndex);
+      if (after) {
+        parent.insertBefore(doc.createTextNode(after), textNode);
+      }
+
+      textNode.remove();
     }
 
     if (this.noteButtons.size > 0) {

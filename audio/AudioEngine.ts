@@ -358,7 +358,8 @@ export class AudioEngine {
     const ctx = this.ctx!;
     const id = this.createId();
 
-    const element = createEl("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.detach();
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -444,7 +445,8 @@ export class AudioEngine {
     opts: PlayOptions = {},
   ) {
     const id = this.createId();
-    const element = createEl("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.detach();
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
 

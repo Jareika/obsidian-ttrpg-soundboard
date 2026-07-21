@@ -370,7 +370,8 @@ var AudioEngine = class {
     await this.ensureContext();
     const ctx = this.ctx;
     const id = this.createId();
-    const element = window.activeDocument.createElement("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.detach();
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -441,7 +442,8 @@ var AudioEngine = class {
   async playWithDirectMediaElement(file, opts = {}) {
     var _a, _b;
     const id = this.createId();
-    const element = window.activeDocument.createElement("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.detach();
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loop = !!opts.loop;
@@ -1532,7 +1534,7 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     this.titleResizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const titleEl = entry.target;
-        if (titleEl instanceof HTMLElement) {
+        if (titleEl.instanceOf(HTMLElement)) {
           this.updateTileTitle(titleEl);
         }
       }
@@ -2379,7 +2381,7 @@ var StyleSettingsModal = class extends import_obsidian6.Modal {
     else if (prop === "cardBorder") setting.setName("Card border");
     else setting.setName("Tile border");
     setting.setDesc("Pick a color.");
-    const statusEl = setting.descEl.createEl("div");
+    const statusEl = setting.descEl.createDiv();
     const refreshStatus = () => {
       var _a2;
       const stored2 = ((_a2 = working[group][prop]) != null ? _a2 : "").trim();
@@ -4198,7 +4200,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         const prefix = isExclusiveSound ? "ttrpg-exclusive-sound:" : "ttrpg-sound:";
         const raw = hrefAttr.slice(prefix.length);
         const path = raw.replace(/^\/+/, "");
-        const button = doc.createElement("button");
+        const button = a.createEl("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
         if (isExclusiveSound) {
@@ -4208,10 +4210,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         if (thumbPath) {
           const af = this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof import_obsidian10.TFile) {
-            const img = doc.createElement("img");
+            const img = button.createEl("img");
             img.src = this.app.vault.getResourcePath(af);
             img.alt = label;
-            button.appendChild(img);
             button.title = label;
             button.classList.add("ttrpg-sb-note-thumb");
           } else {
@@ -4234,7 +4235,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         const raw = hrefAttr.slice(prefix.length);
         const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
         const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
-        const button = doc.createElement("button");
+        const button = a.createEl("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.playlistPath = playlistPath;
         if (isExclusivePlaylist) {
@@ -4276,19 +4277,19 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       if (!parent) continue;
       const original = (_g = textNode.nodeValue) != null ? _g : "";
       let lastIndex = 0;
-      const frag = doc.createDocumentFragment();
       pattern.lastIndex = 0;
       let match;
       while ((match = pattern.exec(original)) !== null) {
         const [full, label, kind, rawPath, thumbPathRaw] = match;
         const before = original.slice(lastIndex, match.index);
         if (before) {
-          frag.appendChild(doc.createTextNode(before));
+          parent.insertBefore(doc.createTextNode(before), textNode);
         }
         if (kind === "ttrpg-sound" || kind === "ttrpg-exclusive-sound") {
           const path = rawPath.replace(/^\/+/, "");
           const isExclusiveSound = kind === "ttrpg-exclusive-sound";
-          const button = doc.createElement("button");
+          const button = parent.createEl("button");
+          parent.insertBefore(button, textNode);
           button.classList.add("ttrpg-sb-stop");
           button.dataset.path = path;
           if (isExclusiveSound) {
@@ -4298,10 +4299,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
           if (thumbPath) {
             const af = this.app.vault.getAbstractFileByPath(thumbPath);
             if (af instanceof import_obsidian10.TFile) {
-              const img = doc.createElement("img");
+              const img = button.createEl("img");
               img.src = this.app.vault.getResourcePath(af);
               img.alt = label;
-              button.appendChild(img);
               button.title = label;
               button.classList.add("ttrpg-sb-note-thumb");
             } else {
@@ -4316,12 +4316,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
             void this.handleNoteButtonClick(path, isExclusiveSound);
           };
           this.noteButtons.add(button);
-          frag.appendChild(button);
         } else {
           const isExclusivePlaylist = kind === "ttrpg-exclusive-playlist";
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
-          const button = doc.createElement("button");
+          const button = parent.createEl("button");
+          parent.insertBefore(button, textNode);
           button.classList.add("ttrpg-sb-stop");
           button.dataset.playlistPath = playlistPath;
           if (isExclusivePlaylist) {
@@ -4330,7 +4330,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
           if (rangeSpec) {
             button.dataset.playlistRange = rangeSpec.trim();
           }
-          button.textContent = label;
+          button.textContent = label || playlistPath;
           button.onclick = (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -4341,15 +4341,17 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
             );
           };
           this.noteButtons.add(button);
-          frag.appendChild(button);
         }
         lastIndex = match.index + full.length;
       }
+      if (lastIndex === 0) {
+        continue;
+      }
       const after = original.slice(lastIndex);
       if (after) {
-        frag.appendChild(doc.createTextNode(after));
+        parent.insertBefore(doc.createTextNode(after), textNode);
       }
-      parent.replaceChild(frag, textNode);
+      textNode.remove();
     }
     if (this.noteButtons.size > 0) {
       this.updateNoteButtonsPlayingState();
