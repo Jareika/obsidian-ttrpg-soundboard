@@ -186,7 +186,7 @@ export default class SoundboardView extends ItemView {
     this.titleResizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const titleEl = entry.target;
-        if (titleEl instanceof HTMLElement) {
+        if (titleEl.instanceOf(HTMLElement)) {
           this.updateTileTitle(titleEl);
         }
       }

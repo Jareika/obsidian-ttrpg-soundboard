@@ -103,7 +103,7 @@ export class StyleSettingsModal extends Modal {
 
     setting.setDesc("Pick a color.");
 
-    const statusEl = setting.descEl.createEl("div");
+    const statusEl = setting.descEl.createDiv();
     const refreshStatus = () => {
       const stored = (working[group][prop] ?? "").trim();
       statusEl.setText(stored ? `Current: ${stored}` : "Current: (uses theme default)");

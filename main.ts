@@ -1364,7 +1364,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         const raw = hrefAttr.slice(prefix.length);
         const path = raw.replace(/^\/+/, "");
 
-        const button = doc.createElement("button");
+        const button = a.createEl("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.path = path;
         if (isExclusiveSound) {
@@ -1375,7 +1375,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         if (thumbPath) {
           const af = this.app.vault.getAbstractFileByPath(thumbPath);
           if (af instanceof TFile) {
-            const img = doc.createElement("img");
+            const img = button.createEl("img");
             img.src = this.app.vault.getResourcePath(af);
             img.alt = label;
             button.appendChild(img);
@@ -1408,7 +1408,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         const [rawPlaylistPath, rangeSpec] = raw.split("#", 2);
         const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
-        const button = doc.createElement("button");
+        const button = a.createEl("button");
         button.classList.add("ttrpg-sb-stop");
         button.dataset.playlistPath = playlistPath;
         if (isExclusivePlaylist) {
@@ -1457,7 +1457,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
 
       const original = textNode.nodeValue ?? "";
       let lastIndex = 0;
-      const frag = doc.createDocumentFragment();
+     const frag = createFragment();
 
       pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
@@ -1472,7 +1472,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         if (kind === "ttrpg-sound" || kind === "ttrpg-exclusive-sound") {
           const path = rawPath.replace(/^\/+/, "");
 		  const isExclusiveSound = kind === "ttrpg-exclusive-sound";
-          const button = doc.createElement("button");
+          const button = a.createEl("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.path = path;
           if (isExclusiveSound) {
@@ -1483,7 +1483,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           if (thumbPath) {
             const af = this.app.vault.getAbstractFileByPath(thumbPath);
             if (af instanceof TFile) {
-              const img = doc.createElement("img");
+              const img = button.createEl("img");
               img.src = this.app.vault.getResourcePath(af);
               img.alt = label;
               button.appendChild(img);
@@ -1509,7 +1509,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
           const [rawPlaylistPath, rangeSpec] = rawPath.split("#", 2);
           const playlistPath = rawPlaylistPath.replace(/^\/+/, "");
 
-          const button = doc.createElement("button");
+          const button = a.createEl("button");
           button.classList.add("ttrpg-sb-stop");
           button.dataset.playlistPath = playlistPath;
           if (isExclusivePlaylist) {
