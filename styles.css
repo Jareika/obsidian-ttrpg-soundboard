@@ -6,6 +6,10 @@
   --ttrpg-note-icon-size: 40px; /* default size for note button images */
 }
 
+.ttrpg-sb-direct-media-element {
+  display: none;
+}
+
 .workspace-leaf-content[data-type="ttrpg-soundboard-view"] .view-content.ttrpg-sb-view,
 .workspace-leaf-content[data-type="ttrpg-soundboard-nowplaying"] .view-content.ttrpg-sb-view {
   padding-top: 0;

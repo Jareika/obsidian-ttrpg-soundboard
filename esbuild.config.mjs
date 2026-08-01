@@ -1,8 +1,7 @@
 // esbuild.config.mjs
 import esbuild from "esbuild";
-import process from "process";
 
-const isWatch = process.argv.includes("--watch");
+const isWatch = globalThis.process?.argv.includes("--watch") ?? false;
 
 const ctx = await esbuild.context({
   entryPoints: ["main.ts"],
@@ -42,9 +41,7 @@ const ctx = await esbuild.context({
 
 if (isWatch) {
   await ctx.watch();
-  console.log("esbuild: watching for changes...");
 } else {
   await ctx.rebuild();
   await ctx.dispose();
-  console.log("esbuild: build finished.");
 }

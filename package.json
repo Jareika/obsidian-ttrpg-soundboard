@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ttrpg-soundboard",
-  "version": "1.2.9",
+  "version": "1.2.11",
   "description": "Soundboard plugin designed for Tabletop RPGs",
   "main": "main.js",
   "scripts": {
@@ -18,11 +18,14 @@
     "bestzip": "^2.2.1",
     "esbuild": "^0.28.0",
     "eslint": "^9.39.2",
-    "eslint-plugin-obsidianmd": "^0.1.9",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "globals": "^16.5.0",
-    "obsidian": "^1.7.2",
+    "obsidian": "^1.13.0",
     "tslib": "^2.6.3",
     "typescript": "^5.4.5"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
 }

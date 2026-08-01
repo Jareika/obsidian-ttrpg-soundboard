@@ -443,7 +443,8 @@ var AudioEngine = class {
     var _a, _b;
     const id = this.createId();
     const element = this.app.workspace.containerEl.createEl("audio");
-    element.detach();
+    element.addClass("ttrpg-sb-direct-media-element");
+    element.setAttr("aria-hidden", "true");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loop = !!opts.loop;
@@ -1049,6 +1050,10 @@ var AudioEngine = class {
     try {
       rec.element.removeAttribute("src");
       rec.element.load();
+    } catch (e) {
+    }
+    try {
+      rec.element.detach();
     } catch (e) {
     }
   }
@@ -2480,7 +2485,427 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  getSettingDefinitions() {
+    var _a, _b, _c;
+    const externalLibraryVisible = () => this.plugin.settings.soundLibraryLocation === "external";
+    const topFolders = (_b = (_a = this.plugin.library) == null ? void 0 : _a.topFolders) != null ? _b : [];
+    const rootFolder = (_c = this.plugin.library) == null ? void 0 : _c.rootFolder;
+    const rootRegex = rootFolder != null && rootFolder !== "" ? new RegExp(
+      `^${rootFolder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`
+    ) : null;
+    const makeFolderLabel = (folderPath) => rootRegex ? folderPath.replace(rootRegex, "") || folderPath : folderPath;
+    const perFolderItems = topFolders.length > 0 ? topFolders.map((folderPath) => {
+      const globalIsSimple = this.plugin.settings.simpleView;
+      const inheritLabel = globalIsSimple ? "Inherit (simple list)" : "Inherit (grid)";
+      return this.renderSetting(
+        makeFolderLabel(folderPath),
+        folderPath,
+        (setting) => {
+          setting.addDropdown((dropdown) => {
+            var _a2, _b2;
+            dropdown.addOption("inherit", inheritLabel);
+            dropdown.addOption("grid", "Grid");
+            dropdown.addOption("simple", "Simple list");
+            const mode = (_b2 = (_a2 = this.plugin.settings.folderViewModes) == null ? void 0 : _a2[folderPath]) != null ? _b2 : "inherit";
+            dropdown.setValue(mode);
+            dropdown.onChange((value) => {
+              if (value === "inherit" || value === "grid" || value === "simple") {
+                this.plugin.setFolderViewMode(folderPath, value);
+              }
+            });
+          });
+        }
+      );
+    }) : [
+      this.renderSetting(
+        "No top-level folders detected yet",
+        "Make sure your root folder exists and contains subfolders.",
+        () => {
+        }
+      )
+    ];
+    return [
+      {
+        type: "group",
+        heading: "Library",
+        items: [
+          this.control(
+            "Sound library location",
+            "soundLibraryLocation",
+            {
+              type: "dropdown",
+              options: {
+                vault: "Inside this vault",
+                external: "External folder (desktop only)"
+              },
+              disabled: !import_obsidian7.Platform.isDesktopApp
+            },
+            "Choose whether sounds are read from this vault or from a shared external folder. External folders are available on desktop only."
+          ),
+          {
+            ...this.control(
+              "External sound folder",
+              "externalSoundFolderPath",
+              {
+                type: "text",
+                placeholder: "D:\\TTRPG Audio",
+                disabled: !import_obsidian7.Platform.isDesktopApp
+              },
+              "Absolute desktop path to the shared audio library. Use the Reload audio list command after changing files outside Obsidian."
+            ),
+            visible: externalLibraryVisible
+          },
+          this.renderSetting(
+            "Load / reload external sound library",
+            "Loads the configured external folder once. Use this after changing the path or after adding files outside Obsidian.",
+            (setting) => {
+              setting.addButton(
+                (button) => button.setButtonText("Load external library").setDisabled(
+                  !import_obsidian7.Platform.isDesktopApp || this.plugin.settings.soundLibraryLocation !== "external"
+                ).onClick(() => {
+                  void this.plugin.rescan();
+                })
+              );
+            },
+            externalLibraryVisible
+          ),
+          this.control(
+            "Root folder",
+            "rootFolder",
+            {
+              type: "text",
+              placeholder: "Soundbar"
+            },
+            "Only subfolders under this folder are listed as options."
+          ),
+          this.control(
+            "Include files directly in root",
+            "includeRootFiles",
+            { type: "toggle" },
+            "If enabled, files directly in the root folder are listed (otherwise only in subfolders)."
+          ),
+          this.commaSeparatedSetting(
+            "Folders (legacy, comma separated)",
+            "folders",
+            "Used only when the root folder is empty.",
+            "TTRPG Sounds"
+          ),
+          this.commaSeparatedSetting(
+            "Allowed extensions",
+            "extensions",
+            "E.g., mp3, ogg, wav, m4a, flac.",
+            "mp3, ogg, wav",
+            (value) => value.split(",").map(
+              (extension) => extension.trim().replace(/^\./, "").toLowerCase()
+            ).filter(Boolean)
+          )
+        ]
+      },
+      {
+        type: "group",
+        heading: "Playback",
+        items: [
+          this.control(
+            "Fade in (ms)",
+            "defaultFadeInMs",
+            { type: "number", min: 0, step: 1 }
+          ),
+          this.control(
+            "Fade out (ms)",
+            "defaultFadeOutMs",
+            { type: "number", min: 0, step: 1 }
+          ),
+          this.control(
+            "Allow retrigger overlap",
+            "allowOverlap",
+            { type: "toggle" },
+            "Allow the same sound to play multiple times at once. Disable this to prevent stacking the same file by repeated clicks."
+          ),
+          this.control(
+            "Exclusive playback",
+            "exclusivePlayback",
+            { type: "toggle" },
+            "When starting a new sound or playlist, fade out all currently playing sounds first. Useful if you want only one track at a time."
+          ),
+          this.control(
+            "Master volume",
+            "masterVolume",
+            { type: "slider", min: 0, max: 1, step: 0.01 }
+          ),
+          this.control(
+            "Threshold for faster large-file audio playback (mb)",
+            "mediaElementThresholdMB",
+            { type: "slider", min: 0, max: 512, step: 1 },
+            "Files larger than this threshold are played via the HTMLAudioElement for faster startup without full decoding. Set to 0 to disable."
+          ),
+          this.control(
+            "Decoded audio cache",
+            "maxAudioCacheMB",
+            { type: "slider", min: 0, max: 2048, step: 16 },
+            "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal RAM, more decoding)."
+          ),
+          this.control(
+            "iPad/iPhone lock-screen compatibility mode",
+            "iosLockscreenCompatibilityMode",
+            { type: "toggle" },
+            "This can help if sounds become silent after screen lock. Applies to newly started sounds."
+          )
+        ]
+      },
+      {
+        type: "group",
+        heading: "Appearance",
+        items: [
+          this.renderSetting(
+            "Soundboard style",
+            "Configure card/tile/button colors for sounds, ambience and playlists.",
+            (setting) => {
+              setting.addButton(
+                (button) => button.setButtonText("Open style editor").onClick(() => {
+                  new StyleSettingsModal(this.app, this.plugin).open();
+                })
+              );
+            }
+          ),
+          this.control(
+            "Four pinned folder slots",
+            "toolbarFourFolders",
+            { type: "toggle" },
+            "If enabled, show four folder dropdowns in the soundboard toolbar (two rows) instead of two with a switch button."
+          ),
+          this.control(
+            'Show "All folders" in soundboard dropdowns',
+            "showAllFoldersOption",
+            { type: "toggle" },
+            "If disabled, the toolbar dropdowns only show concrete folders. Empty selections automatically fall back to the first available folder, which can reduce lag in very large libraries."
+          ),
+          this.control(
+            "Simple list view (global default)",
+            "simpleView",
+            { type: "toggle" },
+            "Global default: if no per-folder override exists, folders are shown either as grid or simple list."
+          ),
+          this.control(
+            "Tile sizing mode",
+            "tileSizingMode",
+            {
+              type: "dropdown",
+              options: {
+                "fixed-height": "Fixed height",
+                "aspect-ratio": "Aspect ratio"
+              }
+            },
+            "Choose whether grid tiles use a fixed height or a fixed aspect ratio."
+          ),
+          {
+            ...this.control(
+              "Tile aspect ratio",
+              "tileAspectRatioPreset",
+              {
+                type: "dropdown",
+                options: {
+                  "16:9": "16:9",
+                  "3:2": "3:2",
+                  "4:3": "4:3",
+                  "1:1": "1:1",
+                  "21:9": "21:9"
+                }
+              },
+              "Used only when tile sizing mode is set to aspect ratio. Images still fill the tile and may crop slightly."
+            ),
+            visible: () => this.plugin.settings.tileSizingMode === "aspect-ratio"
+          },
+          {
+            ...this.control(
+              "Tile height (px)",
+              "tileHeightPx",
+              { type: "slider", min: 30, max: 300, step: 1 },
+              "Adjust thumbnail tile height for the grid."
+            ),
+            visible: () => this.plugin.settings.tileSizingMode === "fixed-height"
+          },
+          this.control(
+            "Limit tile titles to one line",
+            "limitTileTitlesToOneLine",
+            { type: "toggle" },
+            'Long titles are shortened to fit the tile and end with "...".'
+          ),
+          this.control(
+            "Note button icon size (px)",
+            "noteIconSizePx",
+            { type: "slider", min: 16, max: 128, step: 1 },
+            "Height of images used in note buttons."
+          )
+        ]
+      },
+      {
+        type: "group",
+        heading: "Arrangement",
+        items: [
+          this.control(
+            "Enable arrangement",
+            "arrangementEnabled",
+            { type: "toggle" },
+            "If enabled, the soundboard groups sounds by category and shows them in your chosen order."
+          ),
+          this.arrangementControl("First group", "arrangementFirst"),
+          this.arrangementControl("Second group", "arrangementSecond"),
+          this.arrangementControl("Third group", "arrangementThird")
+        ]
+      },
+      {
+        type: "group",
+        heading: "Per-folder view mode",
+        items: perFolderItems
+      },
+      {
+        type: "group",
+        heading: "Thumbnails",
+        items: [
+          this.control(
+            "Use shared thumbnail folder",
+            "thumbnailFolderEnabled",
+            { type: "toggle" },
+            "If enabled, the plugin looks for thumbnails in the shared folder instead of next to audio files."
+          ),
+          {
+            ...this.control(
+              "Thumbnail folder path",
+              "thumbnailFolderPath",
+              {
+                type: "text",
+                placeholder: "Soundbar/_thumbnails"
+              },
+              "Vault path to the folder containing thumbnails. When enabled, thumbnails are looked up only in this folder (by matching base filename)."
+            ),
+            visible: () => this.plugin.settings.thumbnailFolderEnabled
+          }
+        ]
+      }
+    ];
+  }
+  /**
+   * Declarative controls automatically persist through this method.
+   * Keep all existing imperative side effects centralised here.
+   */
+  async setControlValue(key, value) {
+    var _a, _b, _c, _d;
+    const settings = this.plugin.settings;
+    if (key === "rootFolder" || key === "externalSoundFolderPath" || key === "thumbnailFolderPath") {
+      settings[key] = typeof value === "string" ? value.trim() : value;
+    } else {
+      settings[key] = value;
+    }
+    await this.plugin.saveSettings();
+    switch (key) {
+      case "masterVolume":
+        (_a = this.plugin.engine) == null ? void 0 : _a.setMasterVolume(this.plugin.settings.masterVolume);
+        break;
+      case "mediaElementThresholdMB":
+        (_b = this.plugin.engine) == null ? void 0 : _b.setMediaElementThresholdMB(
+          this.plugin.settings.mediaElementThresholdMB
+        );
+        break;
+      case "maxAudioCacheMB":
+        (_c = this.plugin.engine) == null ? void 0 : _c.setCacheLimitMB(this.plugin.settings.maxAudioCacheMB);
+        break;
+      case "iosLockscreenCompatibilityMode":
+        (_d = this.plugin.engine) == null ? void 0 : _d.setIOSLockscreenCompatibilityMode(
+          this.plugin.settings.iosLockscreenCompatibilityMode
+        );
+        break;
+      case "ambienceVolume":
+        this.plugin.updateVolumesForPlayingAmbience();
+        break;
+    }
+    const requiresRescan = /* @__PURE__ */ new Set([
+      "rootFolder",
+      "includeRootFiles",
+      "folders",
+      "extensions",
+      "thumbnailFolderEnabled",
+      "thumbnailFolderPath"
+    ]);
+    const requiresViewRefresh = /* @__PURE__ */ new Set([
+      "toolbarFourFolders",
+      "showAllFoldersOption",
+      "simpleView",
+      "tileSizingMode",
+      "tileAspectRatioPreset",
+      "tileHeightPx",
+      "limitTileTitlesToOneLine",
+      "noteIconSizePx",
+      "arrangementEnabled",
+      "arrangementFirst",
+      "arrangementSecond",
+      "arrangementThird",
+      "thumbnailFolderEnabled",
+      "thumbnailFolderPath"
+    ]);
+    if (requiresRescan.has(key)) {
+      await this.plugin.rescan();
+      this.plugin.refreshViews();
+      this.updateDeclarativeSettings();
+      return;
+    }
+    if (requiresViewRefresh.has(key)) {
+      this.plugin.refreshViews();
+    }
+  }
+  updateDeclarativeSettings() {
+    var _a;
+    const declarativeTab = this;
+    (_a = declarativeTab.update) == null ? void 0 : _a.call(declarativeTab);
+  }
+  control(name, key, control, desc) {
+    return {
+      name,
+      desc,
+      control: {
+        ...control,
+        key
+      }
+    };
+  }
+  renderSetting(name, desc, render, visible) {
+    return {
+      name,
+      desc,
+      visible,
+      render: (setting) => {
+        render(setting);
+      }
+    };
+  }
+  commaSeparatedSetting(name, key, desc, placeholder, parse = (value) => value.split(",").map((part) => part.trim()).filter(Boolean)) {
+    return this.renderSetting(name, desc, (setting) => {
+      setting.addText(
+        (text) => text.setPlaceholder(placeholder).setValue(this.plugin.settings[key].join(", ")).onChange((value) => {
+          void this.setControlValue(key, parse(value));
+        })
+      );
+    });
+  }
+  arrangementControl(name, key) {
+    return this.control(
+      name,
+      key,
+      {
+        type: "dropdown",
+        options: {
+          default: "Default",
+          sounds: "Sounds",
+          ambience: "Ambience",
+          playlists: "Playlists"
+        }
+      },
+      "Default means: remaining groups are appended in the default order."
+    );
+  }
   display() {
+    this.renderLegacySettings();
+  }
+  renderLegacySettings() {
     var _a, _b;
     const { containerEl } = this;
     containerEl.empty();
@@ -2507,7 +2932,7 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
       });
     });
     externalFolderSetting = new import_obsidian7.Setting(containerEl).setName("External sound folder").setDesc(
-      "Absolute desktop path to the shared audio library. Use the Reload audio list command after changing files outside Obsidian."
+      "Absolute desktop path to the shared audio library. Use the reload audio list command after changing files outside Obsidian."
     ).addText(
       (ti) => ti.setPlaceholder("D:\\TTRPG Audio").setValue(this.plugin.settings.externalSoundFolderPath).onChange((v) => {
         this.plugin.settings.externalSoundFolderPath = v.trim();
@@ -2599,7 +3024,7 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
     new import_obsidian7.Setting(containerEl).setName("Threshold for faster large-file audio playback (mb)").setDesc(
       "Files larger than this threshold are played via the htmlaudioelement for faster startup without full decoding. Set to 0 to disable."
     ).addSlider(
-      (s) => s.setLimits(0, 512, 1).setValue(this.plugin.settings.mediaElementThresholdMB).setDynamicTooltip().onChange((v) => {
+      (s) => s.setLimits(0, 512, 1).setValue(this.plugin.settings.mediaElementThresholdMB).onChange((v) => {
         var _a2;
         this.plugin.settings.mediaElementThresholdMB = v;
         (_a2 = this.plugin.engine) == null ? void 0 : _a2.setMediaElementThresholdMB(v);
@@ -2607,9 +3032,9 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     );
     new import_obsidian7.Setting(containerEl).setName("Decoded audio cache").setDesc(
-      "Upper limit in megabytes for in-memory decoded audio buffers. 0 disables caching (minimal random access memory, more decoding)."
+      "Upper limit in megabytes for in-memory decoded audio buffers. 0 Disables caching (minimal random access memory, more decoding)."
     ).addSlider(
-      (s) => s.setLimits(0, 2048, 16).setValue(this.plugin.settings.maxAudioCacheMB).setDynamicTooltip().onChange((v) => {
+      (s) => s.setLimits(0, 2048, 16).setValue(this.plugin.settings.maxAudioCacheMB).onChange((v) => {
         var _a2;
         this.plugin.settings.maxAudioCacheMB = v;
         (_a2 = this.plugin.engine) == null ? void 0 : _a2.setCacheLimitMB(v);
@@ -2641,7 +3066,7 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
         this.plugin.refreshViews();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName('Show "All folders" in soundboard dropdowns').setDesc(
+    new import_obsidian7.Setting(containerEl).setName('Show "all folders" in soundboard dropdowns').setDesc(
       "If disabled, the toolbar dropdowns only show concrete folders. Empty selections automatically fall back to the first available folder, which can reduce lag in very large libraries."
     ).addToggle(
       (tg) => tg.setValue(this.plugin.settings.showAllFoldersOption).onChange((v) => {
@@ -2733,7 +3158,7 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
           this.plugin.applyCssVars();
           void this.plugin.saveSettings();
           this.plugin.refreshViews();
-          this.display();
+          this.renderLegacySettings();
         }
       });
     });

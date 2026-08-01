@@ -37,6 +37,7 @@ export default defineConfig([
       "build/**",
       "release/**",
       "**/*.min.js",
+	  "esbuild.config.mjs",
       "main.js"
     ]
   }
