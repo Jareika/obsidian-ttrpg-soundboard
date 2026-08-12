@@ -635,6 +635,28 @@ var AudioEngine = class {
     );
   }
   /**
+   * Pauses every currently playing sound. Already paused sounds remain paused.
+   */
+  async pauseAll(fadeOutMs = 0) {
+    const paths = /* @__PURE__ */ new Set();
+    for (const rec of this.playing.values()) {
+      if (rec.state === "playing") {
+        paths.add(rec.file.path);
+      }
+    }
+    await Promise.all(
+      [...paths].map(async (path) => {
+        var _a;
+        const file = (_a = [...this.playing.values()].find(
+          (rec) => rec.file.path === path
+        )) == null ? void 0 : _a.file;
+        if (file) {
+          await this.pauseByFile(file, fadeOutMs);
+        }
+      })
+    );
+  }
+  /**
    * Resume all paused instances of the given file.
    * If fadeInMs > 0, a short fade-in is applied from volume 0.
    */
@@ -681,6 +703,43 @@ var AudioEngine = class {
         id: rec.id
       });
     }
+  }
+  /**
+   * Resumes every paused sound. Already playing sounds are not affected.
+   */
+  async resumeAll(fadeInMs = 0) {
+    const paths = /* @__PURE__ */ new Set();
+    for (const rec of this.playing.values()) {
+      if (rec.state === "paused") {
+        paths.add(rec.file.path);
+      }
+    }
+    await Promise.all(
+      [...paths].map(async (path) => {
+        var _a;
+        const file = (_a = [...this.playing.values()].find(
+          (rec) => rec.file.path === path
+        )) == null ? void 0 : _a.file;
+        if (file) {
+          await this.resumeByFile(file, fadeInMs);
+        }
+      })
+    );
+  }
+  /**
+   * Combined state of every active playback record.
+   */
+  getGlobalPlaybackState() {
+    let hasPlaying = false;
+    let hasPaused = false;
+    for (const rec of this.playing.values()) {
+      if (rec.state === "playing") hasPlaying = true;
+      else if (rec.state === "paused") hasPaused = true;
+    }
+    if (!hasPlaying && !hasPaused) return "none";
+    if (hasPlaying && !hasPaused) return "playing";
+    if (!hasPlaying && hasPaused) return "paused";
+    return "mixed";
   }
   /**
    * Set the volume (0..1) for all active instances of a given file path.
@@ -3598,6 +3657,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     // Playlist runtime state
     this.playlistStates = /* @__PURE__ */ new Map();
     this.playIdToPlaylist = /* @__PURE__ */ new Map();
+    this.controlsActionListeners = /* @__PURE__ */ new Set();
     // Note buttons inside markdown documents
     this.noteButtons = /* @__PURE__ */ new Set();
     // Registry of volume sliders per file path (soundboard view + now playing)
@@ -3611,6 +3671,24 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     // Remember the last active MarkdownView so buttons can be inserted
     // even when the user currently focuses the soundboard sidebar.
     this.lastMarkdownView = null;
+    /**
+     * Public provider interface for “TTRPG Tools – Controls”.
+     * Controls therefore does not access internal views, settings,
+     * or playback details of this plugin.
+     */
+    this.controlsApi = {
+      apiVersion: 1,
+      providerId: "ttrpg-soundboard",
+      providerName: "TTRPG Tools - Soundboard",
+      getActions: () => this.getControlsActions(),
+      executeAction: async (actionId) => {
+        await this.executeControlsAction(actionId);
+      },
+      onActionsChanged: (callback) => {
+        this.controlsActionListeners.add(callback);
+        return () => this.controlsActionListeners.delete(callback);
+      }
+    };
   }
   async onload() {
     await this.loadAll();
@@ -3646,6 +3724,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         }
       }
       this.updateNoteButtonsPlayingState();
+      this.notifyControlsActionStateChanged();
     });
     this.registerView(VIEW_TYPE_TTRPG_SOUNDBOARD, (leaf) => new SoundboardView(leaf, this));
     this.registerView(VIEW_TYPE_TTRPG_NOWPLAYING, (leaf) => new NowPlayingView(leaf, this));
@@ -3834,6 +3913,13 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
   }
   // ===== View activation / library wiring =====
   async activateView() {
+    await this.activateSoundboardView();
+    await this.activateNowPlayingView(false);
+  }
+  /**
+   * Opens and reveals only the main soundboard view.
+   */
+  async activateSoundboardView() {
     const { workspace } = this.app;
     let sbLeaf;
     const sbLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
@@ -3852,16 +3938,110 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       void workspace.revealLeaf(sbLeaf);
       await this.rebindLeafIfNeeded(sbLeaf);
     }
+  }
+  /**
+   * Opens the Now Playing view. When reveal is false, it is created as an
+   * inactive tab; this preserves the existing behavior of activateView().
+   */
+  async activateNowPlayingView(reveal = true) {
+    const { workspace } = this.app;
     const npLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
-    if (!npLeaves.length) {
+    let nowPlayingLeaf = npLeaves[0];
+    if (!nowPlayingLeaf) {
       const right = workspace.getRightLeaf(true);
       if (right) {
         await right.setViewState({
           type: VIEW_TYPE_TTRPG_NOWPLAYING,
-          active: false
+          active: reveal
         });
+        nowPlayingLeaf = right;
       }
     }
+    if (nowPlayingLeaf && reveal) {
+      await workspace.revealLeaf(nowPlayingLeaf);
+    }
+  }
+  // ===== TTRPG Tools - Controls provider API =====
+  getControlsActions() {
+    var _a, _b;
+    const playbackState = (_b = (_a = this.engine) == null ? void 0 : _a.getGlobalPlaybackState()) != null ? _b : "none";
+    const resumeAll = playbackState === "paused";
+    const hasActivePlayback = playbackState !== "none";
+    return [
+      {
+        id: "soundboard.open",
+        name: "Open Soundboard",
+        icon: "music",
+        group: "Views",
+        description: "Open the main Soundboard view.",
+        available: true
+      },
+      {
+        id: "now-playing.open",
+        name: "Open Now Playing",
+        icon: "music-2",
+        group: "Views",
+        description: "Open the view with all active sounds.",
+        available: true
+      },
+      {
+        id: "playback.pause-all",
+        name: resumeAll ? "Resume all sounds" : "Pause all sounds",
+        icon: resumeAll ? "play" : "pause",
+        group: "Playback",
+        description: resumeAll ? "Resume all paused sounds." : "Pause every currently playing sound.",
+        available: true,
+        active: hasActivePlayback
+      },
+      {
+        id: "settings.open",
+        name: "Open Soundboard settings",
+        icon: "settings",
+        group: "Management",
+        description: "Open the settings for TTRPG Tools - Soundboard.",
+        available: true
+      }
+    ];
+  }
+  async executeControlsAction(actionId) {
+    switch (actionId) {
+      case "soundboard.open":
+        await this.activateSoundboardView();
+        return;
+      case "now-playing.open":
+        await this.activateNowPlayingView(true);
+        return;
+      case "playback.pause-all": {
+        const state = this.engine.getGlobalPlaybackState();
+        if (state === "none") {
+          new import_obsidian10.Notice("No sounds are currently playing.");
+        } else if (state === "paused") {
+          await this.engine.resumeAll(this.settings.defaultFadeInMs);
+        } else {
+          await this.engine.pauseAll(this.settings.defaultFadeOutMs);
+        }
+        return;
+      }
+      case "settings.open":
+        this.openPluginSettings();
+        return;
+      default:
+        throw new Error(`Unknown Soundboard Controls action: ${actionId}`);
+    }
+  }
+  notifyControlsActionStateChanged() {
+    for (const callback of this.controlsActionListeners) {
+      try {
+        callback();
+      } catch (e) {
+      }
+    }
+  }
+  openPluginSettings() {
+    var _a, _b;
+    const appWithSettings = this.app;
+    (_a = appWithSettings.setting) == null ? void 0 : _a.open();
+    (_b = appWithSettings.setting) == null ? void 0 : _b.openTabById(this.manifest.id);
   }
   async rescan() {
     var _a;

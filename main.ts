@@ -59,6 +59,25 @@ interface PlaylistRuntimeState {
   currentTrackPath?: string;
 }
 
+interface SoundboardControlsAction {
+  id: string;
+  name: string;
+  icon: string;
+  group: string;
+  description?: string;
+  available: boolean;
+  active?: boolean;
+}
+
+interface SoundboardControlsApi {
+  apiVersion: 1;
+  providerId: string;
+  providerName: string;
+  getActions(): SoundboardControlsAction[];
+  executeAction(actionId: string): Promise<void>;
+  onActionsChanged?(callback: () => void): () => void;
+}
+
 // Convert unknown thrown values into a usable Error without relying on "[object Object]" stringification.
 function unknownToError(err: unknown, fallbackMessage = "Unknown error"): Error {
   if (err instanceof Error) return err;
@@ -109,6 +128,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   // Playlist runtime state
   private playlistStates = new Map<string, PlaylistRuntimeState>();
   private playIdToPlaylist = new Map<string, string>();
+  private controlsActionListeners = new Set<() => void>();
 
   // Note buttons inside markdown documents
   private noteButtons = new Set<HTMLButtonElement>();
@@ -128,6 +148,26 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   // Remember the last active MarkdownView so buttons can be inserted
   // even when the user currently focuses the soundboard sidebar.
   private lastMarkdownView: MarkdownView | null = null;
+  
+  /**
+   * Public provider interface for “TTRPG Tools – Controls”.
+   * Controls therefore does not access internal views, settings,
+   * or playback details of this plugin.
+   */
+
+  controlsApi: SoundboardControlsApi = {
+    apiVersion: 1,
+    providerId: "ttrpg-soundboard",
+    providerName: "TTRPG Tools - Soundboard",
+    getActions: () => this.getControlsActions(),
+    executeAction: async (actionId) => {
+      await this.executeControlsAction(actionId);
+    },
+    onActionsChanged: (callback) => {
+      this.controlsActionListeners.add(callback);
+      return () => this.controlsActionListeners.delete(callback);
+    },
+  };
 
   async onload() {
     await this.loadAll();
@@ -169,6 +209,7 @@ export default class TTRPGSoundboardPlugin extends Plugin {
         }
       }
       this.updateNoteButtonsPlayingState();
+	  this.notifyControlsActionStateChanged();
     });
 
     // Views
@@ -400,9 +441,16 @@ export default class TTRPGSoundboardPlugin extends Plugin {
   // ===== View activation / library wiring =====
 
   async activateView() {
+    await this.activateSoundboardView();
+    await this.activateNowPlayingView(false);
+  }
+
+  /**
+   * Opens and reveals only the main soundboard view.
+   */
+  async activateSoundboardView() {
     const { workspace } = this.app;
 
-    // 1) Ensure main soundboard view exists in the right dock
     let sbLeaf: WorkspaceLeaf | undefined;
     const sbLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
     if (sbLeaves.length) {
@@ -420,18 +468,132 @@ export default class TTRPGSoundboardPlugin extends Plugin {
       void workspace.revealLeaf(sbLeaf);
       await this.rebindLeafIfNeeded(sbLeaf);
     }
+  }
 
-    // 2) Ensure now-playing view exists as a tab in the right dock
+  /**
+   * Opens the Now Playing view. When reveal is false, it is created as an
+   * inactive tab; this preserves the existing behavior of activateView().
+   */
+  async activateNowPlayingView(reveal = true) {
+    const { workspace } = this.app;
     const npLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_NOWPLAYING);
-    if (!npLeaves.length) {
+
+    let nowPlayingLeaf = npLeaves[0];
+
+    if (!nowPlayingLeaf) {
       const right = workspace.getRightLeaf(true);
       if (right) {
         await right.setViewState({
           type: VIEW_TYPE_TTRPG_NOWPLAYING,
-          active: false,
+          active: reveal,
         });
+		nowPlayingLeaf = right;
       }
     }
+
+    if (nowPlayingLeaf && reveal) {
+      await workspace.revealLeaf(nowPlayingLeaf);
+    }
+  }
+
+  // ===== TTRPG Tools - Controls provider API =====
+
+  private getControlsActions(): SoundboardControlsAction[] {
+    const playbackState = this.engine?.getGlobalPlaybackState() ?? "none";
+    const resumeAll = playbackState === "paused";
+	const hasActivePlayback = playbackState !== "none";
+
+    return [
+      {
+        id: "soundboard.open",
+        name: "Open Soundboard",
+        icon: "music",
+        group: "Views",
+        description: "Open the main Soundboard view.",
+        available: true,
+      },
+      {
+        id: "now-playing.open",
+        name: "Open Now Playing",
+        icon: "music-2",
+        group: "Views",
+        description: "Open the view with all active sounds.",
+        available: true,
+      },
+      {
+        id: "playback.pause-all",
+        name: resumeAll ? "Resume all sounds" : "Pause all sounds",
+        icon: resumeAll ? "play" : "pause",
+        group: "Playback",
+        description: resumeAll
+          ? "Resume all paused sounds."
+          : "Pause every currently playing sound.",
+        available: true,
+        active: hasActivePlayback,
+      },
+      {
+        id: "settings.open",
+        name: "Open Soundboard settings",
+        icon: "settings",
+        group: "Management",
+        description: "Open the settings for TTRPG Tools - Soundboard.",
+        available: true,
+      },
+    ];
+  }
+
+  private async executeControlsAction(actionId: string): Promise<void> {
+    switch (actionId) {
+      case "soundboard.open":
+        await this.activateSoundboardView();
+        return;
+
+      case "now-playing.open":
+        await this.activateNowPlayingView(true);
+        return;
+
+      case "playback.pause-all": {
+        const state = this.engine.getGlobalPlaybackState();
+
+        if (state === "none") {
+          new Notice("No sounds are currently playing.");
+        } else if (state === "paused") {
+          await this.engine.resumeAll(this.settings.defaultFadeInMs);
+        } else {
+          await this.engine.pauseAll(this.settings.defaultFadeOutMs);
+        }
+        return;
+      }
+
+      case "settings.open":
+        this.openPluginSettings();
+        return;
+
+      default:
+        throw new Error(`Unknown Soundboard Controls action: ${actionId}`);
+    }
+  }
+  
+  private notifyControlsActionStateChanged() {
+    for (const callback of this.controlsActionListeners) {
+      try {
+        callback();
+      } catch {
+        // A faulty listener must not interfere with audio playback.
+      }
+    }
+  }
+
+  private openPluginSettings() {
+    const appWithSettings = this.app as unknown as {
+      setting?: {
+        open: () => void;
+        openTabById: (id: string) => void;
+      };
+    };
+
+    appWithSettings.setting?.open();
+    appWithSettings.setting?.openTabById(this.manifest.id);
   }
 
   async rescan() {

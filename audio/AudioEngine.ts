@@ -86,6 +86,7 @@ interface DirectMediaPlaybackRecord extends PlaybackRecordBase {
 type PlaybackRecord = BufferPlaybackRecord | MediaPlaybackRecord | DirectMediaPlaybackRecord;
 
 export type PathPlaybackState = "none" | "playing" | "paused" | "mixed";
+export type GlobalPlaybackState = "none" | "playing" | "paused" | "mixed";
 
 export class AudioEngine {
   private app: App;
@@ -677,6 +678,31 @@ export class AudioEngine {
       ),
     );
   }
+  
+  /**
+   * Pauses every currently playing sound. Already paused sounds remain paused.
+   */
+  async pauseAll(fadeOutMs = 0) {
+    const paths = new Set<string>();
+
+    for (const rec of this.playing.values()) {
+      if (rec.state === "playing") {
+        paths.add(rec.file.path);
+      }
+    }
+
+    await Promise.all(
+      [...paths].map(async (path) => {
+        const file = [...this.playing.values()].find(
+          (rec) => rec.file.path === path,
+        )?.file;
+
+        if (file) {
+          await this.pauseByFile(file, fadeOutMs);
+        }
+      }),
+    );
+  }
 
   /**
    * Resume all paused instances of the given file.
@@ -734,6 +760,49 @@ export class AudioEngine {
         id: rec.id,
       });
     }
+  }
+  
+  /**
+   * Resumes every paused sound. Already playing sounds are not affected.
+   */
+  async resumeAll(fadeInMs = 0) {
+    const paths = new Set<string>();
+
+    for (const rec of this.playing.values()) {
+      if (rec.state === "paused") {
+        paths.add(rec.file.path);
+      }
+    }
+
+    await Promise.all(
+      [...paths].map(async (path) => {
+        const file = [...this.playing.values()].find(
+          (rec) => rec.file.path === path,
+        )?.file;
+
+        if (file) {
+          await this.resumeByFile(file, fadeInMs);
+        }
+      }),
+    );
+  }
+
+  /**
+   * Combined state of every active playback record.
+   */
+  getGlobalPlaybackState(): GlobalPlaybackState {
+    let hasPlaying = false;
+    let hasPaused = false;
+
+    for (const rec of this.playing.values()) {
+      if (rec.state === "playing") hasPlaying = true;
+      else if (rec.state === "paused") hasPaused = true;
+    }
+
+    if (!hasPlaying && !hasPaused) return "none";
+    if (hasPlaying && !hasPaused) return "playing";
+    if (!hasPlaying && hasPaused) return "paused";
+    return "mixed";
   }
 
   /**
