@@ -383,7 +383,7 @@ export class JsonPlaylistEditorModal extends Modal {
       node.files.push(file);
     }
 
-    this.renderTrackTreeNode(this.sourceListEl, rootNode, true);
+    this.renderTrackTreeNode(this.sourceListEl, rootNode);
 
     window.requestAnimationFrame(() => {
       if (this.sourceListEl.isConnected) {
@@ -395,7 +395,6 @@ export class JsonPlaylistEditorModal extends Modal {
   private renderTrackTreeNode(
     parent: HTMLElement,
     node: TrackTreeNode,
-    isRoot = false,
   ) {
     for (const file of node.files.sort((a, b) =>
       a.basename.localeCompare(b.basename),
@@ -409,7 +408,6 @@ export class JsonPlaylistEditorModal extends Modal {
       const details = parent.createEl("details", {
         cls: "ttrpg-sb-playlist-editor-folder",
       });
-      details.open = isRoot;
       details.createEl("summary", { text: name });
 
       const children = details.createDiv({

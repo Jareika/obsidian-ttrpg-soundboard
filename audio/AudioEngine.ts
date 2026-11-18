@@ -476,8 +476,8 @@ export class AudioEngine {
     const ctx = this.ctx!;
     const id = this.createId();
 
-    const element =
-      this.app.workspace.containerEl.ownerDocument.createElement("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.addClass("ttrpg-sb-media-element");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -601,7 +601,7 @@ export class AudioEngine {
     const id = this.createId();
     const element = this.app.workspace.containerEl.createEl("audio");
 
-    element.addClass("ttrpg-sb-direct-media-element");
+    element.addClass("ttrpg-sb-media-element");
     element.setAttr("aria-hidden", "true");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
@@ -1427,6 +1427,12 @@ export class AudioEngine {
       rec.element.load();
     } catch {
       // Ignore reset errors.
+    }
+
+    try {
+      rec.element.detach();
+    } catch {
+      // Ignore DOM cleanup errors.
     }
   }
 

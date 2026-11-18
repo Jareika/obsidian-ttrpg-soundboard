@@ -479,7 +479,8 @@ var AudioEngine = class {
     }
     const ctx = this.ctx;
     const id = this.createId();
-    const element = this.app.workspace.containerEl.ownerDocument.createElement("audio");
+    const element = this.app.workspace.containerEl.createEl("audio");
+    element.addClass("ttrpg-sb-media-element");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -574,7 +575,7 @@ var AudioEngine = class {
     }
     const id = this.createId();
     const element = this.app.workspace.containerEl.createEl("audio");
-    element.addClass("ttrpg-sb-direct-media-element");
+    element.addClass("ttrpg-sb-media-element");
     element.setAttr("aria-hidden", "true");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
@@ -1241,6 +1242,10 @@ var AudioEngine = class {
     try {
       rec.element.removeAttribute("src");
       rec.element.load();
+    } catch (e) {
+    }
+    try {
+      rec.element.detach();
     } catch (e) {
     }
   }
@@ -4397,14 +4402,14 @@ var JsonPlaylistEditorModal = class extends import_obsidian11.Modal {
       }
       node.files.push(file);
     }
-    this.renderTrackTreeNode(this.sourceListEl, rootNode, true);
+    this.renderTrackTreeNode(this.sourceListEl, rootNode);
     window.requestAnimationFrame(() => {
       if (this.sourceListEl.isConnected) {
         this.sourceListEl.scrollTop = previousScrollTop;
       }
     });
   }
-  renderTrackTreeNode(parent, node, isRoot = false) {
+  renderTrackTreeNode(parent, node) {
     for (const file of node.files.sort(
       (a, b) => a.basename.localeCompare(b.basename)
     )) {
@@ -4416,7 +4421,6 @@ var JsonPlaylistEditorModal = class extends import_obsidian11.Modal {
       const details = parent.createEl("details", {
         cls: "ttrpg-sb-playlist-editor-folder"
       });
-      details.open = isRoot;
       details.createEl("summary", { text: name });
       const children = details.createDiv({
         cls: "ttrpg-sb-playlist-editor-folder-children"
