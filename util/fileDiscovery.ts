@@ -2,20 +2,31 @@ import { App, TFile, TFolder, normalizePath } from "obsidian";
 import {
   assertExternalDirectory,
   createExternalAudioFile,
+	readExternalFileText,
   readExternalDirectory,
   resolveExternalPath,
 } from "./externalFiles";
 import type { LibraryFile } from "./externalFiles";
+import {
+  getJsonPlaylistBaseName,
+  isJsonPlaylistFileName,
+  normalizeJsonPlaylistTrackPath,
+  parseJsonPlaylistDocument,
+} from "./jsonPlaylists";
 
 export const IMG_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 const AMBIENCE_FOLDER_NAME = "ambience";
 
 export interface PlaylistInfo {
-  path: string; // full folder path (for example: Root/Category/PlaylistA)
-  name: string; // folder name
-  parent: string; // path of the parent (top-level) folder
-  tracks: LibraryFile[]; // audio files inside the playlist folder (recursively)
-  cover?: LibraryFile; // vault or external cover image
+  path: string;
+  name: string;
+  parent: string;
+  tracks: LibraryFile[];
+  cover?: LibraryFile;
+
+  kind: "folder" | "json";
+
+  definitionFile?: LibraryFile;
 }
 
 export interface FolderContent {
@@ -86,6 +97,7 @@ export async function buildLibrary(
 ): Promise<LibraryModel> {
   if (opts.location === "external") {
     return await buildLibraryFromExternalRoot(
+		  app,
       opts.externalRootFolder ?? "",
       opts.exts,
       !!opts.includeRootFiles,
@@ -93,7 +105,7 @@ export async function buildLibrary(
   }
 
   if (opts.rootFolder?.trim()) {
-    return buildLibraryFromRoot(
+    return await buildLibraryFromRoot(
       app,
       opts.rootFolder,
       opts.exts,
@@ -110,19 +122,33 @@ export async function buildLibrary(
   );
 }
 
-function buildLibraryFromRoot(
+async function buildLibraryFromRoot(
   app: App,
   rootFolder: string,
   extensions: string[],
   includeRootFiles: boolean,
   thumbnailFolder?: string,
-): LibraryModel {
+): Promise<LibraryModel> {
   const root = normalizeFolder(rootFolder);
   const top = listSubfolders(app, root);
   const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
 
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: TFile[] = [];
+  const allAudioFiles = findAudioFilesUnderRoot(
+    app,
+    root,
+    extensions,
+    true,
+  );
+  const audioByRelativePath = new Map<string, TFile>();
+
+  for (const file of allAudioFiles) {
+    const relative = getPathRelativeToRoot(root, file.path);
+    if (relative) {
+      audioByRelativePath.set(relative, file);
+    }
+  }
 
   // Optionally include files directly in the root folder
   if (includeRootFiles) {
@@ -130,19 +156,35 @@ function buildLibraryFromRoot(
     allSingles.push(...rootSingles);
   }
 
-  for (const folder of top) {
-    const files = filesDirectlyIn(app, folder, exts);
-    const { playlists, ambienceSingles } = directChildPlaylistsAndAmbienceSingles(
-      app,
-      folder,
-      exts,
-      thumbnailFolder,
-    );
+	for (const folder of top) {
+		const files = filesDirectlyIn(app, folder, exts);
 
-    const combinedSingles = [...files, ...ambienceSingles];
-    byFolder[folder] = { folder, files: combinedSingles, playlists };
-    allSingles.push(...combinedSingles);
-  }
+		const { playlists: folderPlaylists, ambienceSingles } =
+			directChildPlaylistsAndAmbienceSingles(
+				app,
+				folder,
+				exts,
+				thumbnailFolder,
+			);
+
+		const jsonPlaylists = await loadVaultJsonPlaylists(
+			app,
+			folder,
+			root,
+			audioByRelativePath,
+			thumbnailFolder,
+		);
+
+		const combinedSingles = [...files, ...ambienceSingles];
+		byFolder[folder] = {
+			folder,
+			files: combinedSingles,
+			playlists: [...folderPlaylists, ...jsonPlaylists].sort((a, b) =>
+				a.name.localeCompare(b.name),
+			),
+		};
+		allSingles.push(...combinedSingles);
+	}
 
   return { rootFolder: root, topFolders: top, byFolder, allSingles };
 }
@@ -225,12 +267,72 @@ function directChildPlaylistsAndAmbienceSingles(
       parent: folderPath,
       tracks,
       cover,
+			kind: "folder",
     });
   }
 
   playlists.sort((a, b) => a.name.localeCompare(b.name));
   ambienceSingles.sort((a, b) => a.path.localeCompare(b.path));
   return { playlists, ambienceSingles };
+}
+
+async function loadVaultJsonPlaylists(
+  app: App,
+  parentFolder: string,
+  rootFolder: string,
+  audioByRelativePath: Map<string, TFile>,
+  thumbnailFolder?: string,
+): Promise<PlaylistInfo[]> {
+  const folder = app.vault.getAbstractFileByPath(parentFolder);
+  if (!(folder instanceof TFolder)) return [];
+
+  const playlistFiles = folder.children
+    .filter(
+      (child): child is TFile =>
+        child instanceof TFile && isJsonPlaylistFileName(child.name),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const playlists: PlaylistInfo[] = [];
+
+  for (const file of playlistFiles) {
+    try {
+      const document = parseJsonPlaylistDocument(
+        await app.vault.read(file),
+        file.path,
+      );
+
+      const tracks = document.tracks
+        .map((trackPath) =>
+          audioByRelativePath.get(normalizeJsonPlaylistTrackPath(trackPath)),
+        )
+        .filter((track): track is TFile => !!track);
+
+      const coverBaseName = getJsonPlaylistBaseName(file.name);
+      const cover =
+        findVaultImageByPath(app, document.cover) ??
+        (thumbnailFolder?.trim()
+          ? findImageByBaseName(app, thumbnailFolder, coverBaseName)
+          : findImageByBaseName(app, parentFolder, coverBaseName));
+
+      playlists.push({
+        path: file.path,
+        name: document.name,
+        parent: parentFolder,
+        tracks,
+        cover,
+        kind: "json",
+        definitionFile: file,
+      });
+    } catch (err) {
+      console.warn(
+        `TTRPG Soundboard: ignored invalid JSON playlist "${file.path}".`,
+        err,
+      );
+    }
+  }
+
+  return playlists;
 }
 
 function collectAudioRecursive(folder: TFolder, exts: Set<string>): TFile[] {
@@ -311,7 +413,8 @@ export function findAudioFilesUnderRoot(
 }
 
 async function buildLibraryFromExternalRoot(
-  externalRootFolder: string,
+  app: App,
+	externalRootFolder: string,
   extensions: string[],
   includeRootFiles: boolean,
 ): Promise<LibraryModel> {
@@ -334,6 +437,12 @@ async function buildLibraryFromExternalRoot(
   const topFolders = topFolderEntries.map((entry) => entry.name);
   const byFolder: Record<string, FolderContent> = {};
   const allSingles: LibraryFile[] = [];
+  const allAudioFiles = await collectExternalAudioRecursive(root, root, exts);
+  const audioByRelativePath = new Map<string, LibraryFile>();
+
+  for (const file of allAudioFiles) {
+    audioByRelativePath.set(file.path, file);
+  }
 
   if (includeRootFiles) {
     const rootSingles = await externalFilesDirectlyIn(root, root, exts);
@@ -349,13 +458,21 @@ async function buildLibraryFromExternalRoot(
       exts,
     );
 
-    const { playlists, ambienceSingles } =
+    const { playlists: folderPlaylists, ambienceSingles } =
       await externalChildPlaylistsAndAmbienceSingles(
         root,
         folderPath,
         folderEntry.absolutePath,
         exts,
       );
+			
+    const jsonPlaylists = await loadExternalJsonPlaylists(
+      app,
+			root,
+      folderPath,
+      folderEntry.absolutePath,
+      audioByRelativePath,
+    );
 
     const files = [...directFiles, ...ambienceSingles].sort((a, b) =>
       a.path.localeCompare(b.path),
@@ -364,7 +481,9 @@ async function buildLibraryFromExternalRoot(
     byFolder[folderPath] = {
       folder: folderPath,
       files,
-      playlists,
+      playlists: [...folderPlaylists, ...jsonPlaylists].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
     };
 
     allSingles.push(...files);
@@ -444,6 +563,7 @@ async function externalChildPlaylistsAndAmbienceSingles(
       parent: parentRelativePath,
       tracks,
       cover,
+			kind: "folder",
     });
   }
 
@@ -516,6 +636,76 @@ async function findExternalCoverImage(
   return await createExternalAudioFile(rootPath, firstImage.absolutePath);
 }
 
+async function loadExternalJsonPlaylists(
+  app: App,
+	rootPath: string,
+  parentRelativePath: string,
+  parentAbsolutePath: string,
+  audioByRelativePath: Map<string, LibraryFile>,
+): Promise<PlaylistInfo[]> {
+  const entries = await readExternalDirectory(parentAbsolutePath);
+  const playlistEntries = entries
+    .filter(
+      (entry) => entry.isFile && isJsonPlaylistFileName(entry.name),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const playlists: PlaylistInfo[] = [];
+
+  for (const entry of playlistEntries) {
+    try {
+      const definitionFile = await createExternalAudioFile(
+        rootPath,
+        entry.absolutePath,
+      );
+      const document = parseJsonPlaylistDocument(
+        await readExternalFileText(entry.absolutePath),
+        definitionFile.path,
+      );
+
+      const tracks = document.tracks
+        .map((trackPath) =>
+          audioByRelativePath.get(normalizeJsonPlaylistTrackPath(trackPath)),
+        )
+        .filter((track): track is LibraryFile => !!track);
+
+      playlists.push({
+        path: definitionFile.path,
+        name: document.name,
+        parent: parentRelativePath,
+        tracks,
+				cover: findVaultImageByPath(app, document.cover),
+        kind: "json",
+        definitionFile,
+      });
+    } catch (err) {
+      console.warn(
+        `TTRPG Soundboard: ignored invalid JSON playlist "${entry.absolutePath}".`,
+        err,
+      );
+    }
+  }
+
+  return playlists;
+}
+
+function findVaultImageByPath(
+  app: App,
+  path: string | undefined,
+): TFile | undefined {
+  if (!path) return undefined;
+
+  const file = app.vault.getAbstractFileByPath(path);
+  if (
+    file instanceof TFile &&
+    IMG_EXTS.includes(file.extension.toLowerCase())
+  ) {
+    return file;
+  }
+
+  return undefined;
+}
+
 function getExtension(name: string): string {
   const lastDot = name.lastIndexOf(".");
   if (lastDot < 0 || lastDot === name.length - 1) return "";
@@ -525,4 +715,13 @@ function getExtension(name: string): string {
 function normalizeFolder(p: string): string {
   if (!p) return "";
   return normalizePath(p);
+}
+
+function getPathRelativeToRoot(
+  rootFolder: string,
+  fullPath: string,
+): string | null {
+  if (fullPath === rootFolder) return "";
+  if (!fullPath.startsWith(`${rootFolder}/`)) return null;
+  return fullPath.slice(rootFolder.length + 1);
 }

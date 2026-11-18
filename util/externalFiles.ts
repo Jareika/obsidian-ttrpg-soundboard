@@ -26,6 +26,8 @@ export interface ExternalDirectoryEntry {
 interface NodeFs {
   promises: {
     readFile(path: string): Promise<Uint8Array>;
+    writeFile(path: string, data: string, encoding: string): Promise<void>;
+    unlink(path: string): Promise<void>;
     readdir(
       path: string,
       options: { withFileTypes: true },
@@ -86,6 +88,26 @@ export function resolveExternalPath(path: string): string {
   return getPath().resolve(path.trim());
 }
 
+export function resolveExternalChildPath(
+  rootPath: string,
+  ...parts: string[]
+): string {
+  const nodePath = getPath();
+  const root = nodePath.resolve(rootPath);
+  const result = nodePath.resolve(root, ...parts);
+  const relative = nodePath.relative(root, result);
+
+  if (
+    relative === ".." ||
+    relative.startsWith("../") ||
+    relative.startsWith("..\\")
+  ) {
+    throw new Error("The playlist path must stay inside the sound library.");
+  }
+
+  return result;
+}
+
 export async function assertExternalDirectory(path: string): Promise<void> {
   if (!canUseExternalFiles()) {
     throw new Error("External sound libraries are available on desktop only.");
@@ -136,6 +158,26 @@ export async function createExternalAudioFile(
   };
 }
 
+export async function readExternalFileText(
+  absolutePath: string,
+): Promise<string> {
+  const bytes = await getFs().promises.readFile(absolutePath);
+  return new TextDecoder().decode(bytes);
+}
+
+export async function writeExternalFileText(
+  absolutePath: string,
+  content: string,
+): Promise<void> {
+  await getFs().promises.writeFile(absolutePath, content, "utf8");
+}
+
+export async function deleteExternalFile(
+  absolutePath: string,
+): Promise<void> {
+  await getFs().promises.unlink(absolutePath);
+}
+
 export function canUseExternalFiles(): boolean {
   return Platform.isDesktopApp;
 }
@@ -155,6 +197,7 @@ export async function getLibraryImageResourceUrl(
   app: {
     vault: {
       getResourcePath(file: TFile): string;
+			readBinary(file: TFile): Promise<ArrayBuffer>;
     };
   },
   file: LibraryFile,

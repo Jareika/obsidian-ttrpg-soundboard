@@ -27,7 +27,7 @@ export default class NowPlayingView extends ItemView {
     return "music-2";
   }
 
-  onOpen() {
+  async onOpen(): Promise<void> {
     this.contentEl.addClass("ttrpg-sb-view");
 
     this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
@@ -40,13 +40,13 @@ export default class NowPlayingView extends ItemView {
     this.render();
   }
 
-  onClose() {
+  async onClose(): Promise<void> {
     this.contentEl.removeClass("ttrpg-sb-view");
     this.unsubEngine?.();
     this.unsubEngine = undefined;
   }
 
-  getState(): unknown {
+  getState(): Record<string, unknown> {
     return {};
   }
 

@@ -69,6 +69,7 @@ interface BufferPlaybackRecord extends GainPlaybackRecordBase {
 
 interface MediaPlaybackRecord extends GainPlaybackRecordBase {
   kind: "media";
+	started: boolean;
   element: HTMLAudioElement;
   node: MediaElementAudioSourceNode;
   endedHandler: (() => void) | null;
@@ -76,6 +77,7 @@ interface MediaPlaybackRecord extends GainPlaybackRecordBase {
 
 interface DirectMediaPlaybackRecord extends PlaybackRecordBase {
   kind: "media-direct";
+	started: boolean;
   element: HTMLAudioElement;
   endedHandler: (() => void) | null;
   timeUpdateHandler: (() => void) | null;
@@ -95,6 +97,7 @@ export class AudioEngine {
 
   // Small cache of decoded AudioBuffers, with a configurable upper limit in MB.
   private buffers = new Map<string, AudioBuffer>();
+	private pendingBufferLoads = new Map<string, Promise<AudioBuffer>>();
   private bufferUsage = new Map<string, number>(); // path -> approximate bytes
   private totalBufferedBytes = 0;
   private maxCachedBytes = 512 * 1024 * 1024; // default 512 MB
@@ -103,6 +106,8 @@ export class AudioEngine {
   private iosLockscreenCompatibilityMode = false;
 
   private playing = new Map<string, PlaybackRecord>();
+  private playbackGeneration = 0;
+  private filePlaybackGenerations = new Map<string, number>();
   private masterVolume = 1;
   private listeners = new Set<(e: PlaybackEvent) => void>();
 
@@ -225,6 +230,24 @@ export class AudioEngine {
         return cached;
       }
     }
+		
+    const existing = this.pendingBufferLoads.get(key);
+    if (existing) return existing;
+
+    const pending = this.loadUncachedBuffer(file);
+    this.pendingBufferLoads.set(key, pending);
+
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingBufferLoads.get(key) === pending) {
+        this.pendingBufferLoads.delete(key);
+      }
+    }
+  }
+
+  private async loadUncachedBuffer(file: LibraryFile): Promise<AudioBuffer> {
+    const key = file.path;
 
     const bin = await readLibraryFileBinary(this.app, file);
     await this.ensureContext();
@@ -253,31 +276,110 @@ export class AudioEngine {
   // ===== Playback control =====
 
   async play(file: LibraryFile, opts: PlayOptions = {}) {
+    const playbackGeneration = this.playbackGeneration;
+    const filePlaybackGeneration =
+      this.filePlaybackGenerations.get(file.path) ?? 0;
+
     if (this.iosLockscreenCompatibilityMode) {
-      return await this.playWithDirectMediaElement(file, opts);
+      return await this.playWithDirectMediaElement(
+        file,
+        opts,
+        playbackGeneration,
+        filePlaybackGeneration,
+      );
     }
 
     const needsPreciseLoop =
       !!opts.loop && typeof opts.loopEndTrimSeconds === "number" && opts.loopEndTrimSeconds > 0;
 
     if (needsPreciseLoop) {
-      return await this.playWithBuffer(file, opts);
+      return await this.playWithBuffer(
+        file,
+        opts,
+        playbackGeneration,
+        filePlaybackGeneration,
+      );
     }
 
     if (this.isLargeFile(file)) {
       try {
-        return await this.playWithMediaElement(file, opts);
+        return await this.playWithMediaElement(
+          file,
+          opts,
+          playbackGeneration,
+          filePlaybackGeneration,
+        );
       } catch {
-        return await this.playWithBuffer(file, opts);
+        if (
+          !this.isPlaybackStartCurrent(
+            file.path,
+            playbackGeneration,
+            filePlaybackGeneration,
+          )
+        ) {
+          return;
+        }
+
+        return await this.playWithBuffer(
+          file,
+          opts,
+          playbackGeneration,
+          filePlaybackGeneration,
+        );
       }
     }
 
-    return await this.playWithBuffer(file, opts);
+    return await this.playWithBuffer(
+      file,
+      opts,
+      playbackGeneration,
+      filePlaybackGeneration,
+    );
   }
 
-  private async playWithBuffer(file: LibraryFile, opts: PlayOptions = {}) {
+  private async playWithBuffer(
+    file: LibraryFile,
+    opts: PlayOptions,
+    playbackGeneration: number,
+    filePlaybackGeneration: number,
+  ) {
     await this.ensureContext();
-    const buffer = await this.loadBuffer(file);
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      )
+    ) {
+      return;
+    }
+
+    let buffer: AudioBuffer;
+    try {
+      buffer = await this.loadBuffer(file);
+    } catch (err) {
+      if (
+        !this.isPlaybackStartCurrent(
+          file.path,
+          playbackGeneration,
+          filePlaybackGeneration,
+        )
+      ) {
+        return;
+      }
+      throw err;
+    }
+
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      )
+    ) {
+      return;
+    }
+
     const ctx = this.ctx!;
     const id = this.createId();
 
@@ -354,13 +456,28 @@ export class AudioEngine {
     };
   }
 
-  private async playWithMediaElement(file: LibraryFile, opts: PlayOptions = {}) {
+  private async playWithMediaElement(
+    file: LibraryFile,
+    opts: PlayOptions,
+    playbackGeneration: number,
+    filePlaybackGeneration: number,
+  ) {
     await this.ensureContext();
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      )
+    ) {
+      return;
+    }
+
     const ctx = this.ctx!;
     const id = this.createId();
 
-    const element = this.app.workspace.containerEl.createEl("audio");
-    element.detach();
+    const element =
+      this.app.workspace.containerEl.ownerDocument.createElement("audio");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -386,6 +503,7 @@ export class AudioEngine {
 
     const rec: MediaPlaybackRecord = {
       kind: "media",
+			started: false,
       id,
       element,
       node,
@@ -430,10 +548,33 @@ export class AudioEngine {
     } catch (err) {
       this.playing.delete(id);
       this.cleanupMediaRecord(rec);
+
+      if (
+        !this.isPlaybackStartCurrent(
+          file.path,
+          playbackGeneration,
+          filePlaybackGeneration,
+        )
+      ) {
+        return;
+      }
+
       throw err;
     }
 
-    this.emit({ type: "start", filePath: file.path, id });
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      ) ||
+      !this.playing.has(id)
+    ) {
+      return;
+    }
+
+    rec.started = true;
+		this.emit({ type: "start", filePath: file.path, id });
 
     return {
       id,
@@ -443,8 +584,20 @@ export class AudioEngine {
 
   private async playWithDirectMediaElement(
     file: LibraryFile,
-    opts: PlayOptions = {},
+    opts: PlayOptions,
+    playbackGeneration: number,
+    filePlaybackGeneration: number,
   ) {
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      )
+    ) {
+      return;
+    }
+
     const id = this.createId();
     const element = this.app.workspace.containerEl.createEl("audio");
 
@@ -468,6 +621,7 @@ export class AudioEngine {
 
     const rec: DirectMediaPlaybackRecord = {
       kind: "media-direct",
+			started: false,
       id,
       element,
       file,
@@ -550,10 +704,33 @@ export class AudioEngine {
     } catch (err) {
       this.playing.delete(id);
       this.cleanupDirectMediaRecord(rec);
+
+      if (
+        !this.isPlaybackStartCurrent(
+          file.path,
+          playbackGeneration,
+          filePlaybackGeneration,
+        )
+      ) {
+        return;
+      }
+
       throw err;
     }
 
-    if (fadeInMs > 0) {
+    if (
+      !this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration,
+      ) ||
+      !this.playing.has(id)
+    ) {
+      return;
+    }
+
+    rec.started = true;
+		if (fadeInMs > 0) {
       this.animateDirectRecordToRaw(rec, targetVol, fadeInMs);
     }
 
@@ -566,6 +743,8 @@ export class AudioEngine {
   }
 
   async stopByFile(file: LibraryFile, fadeOutMs = 0) {
+    this.invalidatePendingStartsForFile(file.path);
+
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path,
     );
@@ -575,6 +754,8 @@ export class AudioEngine {
   }
 
   async stopAll(fadeOutMs = 0) {
+    this.playbackGeneration++;
+
     const ids = [...this.playing.keys()];
     await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
   }
@@ -649,8 +830,8 @@ export class AudioEngine {
 
             if (fadeSec > 0) {
               const n = this.ctx.currentTime;
-              const cur = rec.gain.gain.value;
-              rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
+              const cur =
+                rec.lastVolume === 0 ? 0 : rec.gain.gain.value;
 
               rec.gain.gain.cancelScheduledValues(n);
               rec.gain.gain.setValueAtTime(cur, n);
@@ -718,7 +899,7 @@ export class AudioEngine {
 
     for (const rec of targets) {
       const target =
-        rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+        rec.lastVolume;
 
       if (rec.kind === "media-direct") {
         this.resumeRecord(rec);
@@ -885,6 +1066,23 @@ export class AudioEngine {
   private clamp01(v: number): number {
     return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
   }
+	
+  private isPlaybackStartCurrent(
+    filePath: string,
+    playbackGeneration: number,
+    filePlaybackGeneration: number,
+  ): boolean {
+    return (
+      playbackGeneration === this.playbackGeneration &&
+      filePlaybackGeneration ===
+        (this.filePlaybackGenerations.get(filePath) ?? 0)
+    );
+  }
+
+  private invalidatePendingStartsForFile(filePath: string) {
+    const generation = this.filePlaybackGenerations.get(filePath) ?? 0;
+    this.filePlaybackGenerations.set(filePath, generation + 1);
+  }
 
   private createId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -915,6 +1113,7 @@ export class AudioEngine {
     source.onended = () => {
       const existing = this.playing.get(rec.id);
       if (!existing || existing.kind !== "buffer") return;
+			if (existing.source !== source) return;
       if (existing.state !== "playing") return;
 
       if (existing.loop && existing.loopDelaySeconds.length > 0) {
@@ -1091,7 +1290,10 @@ export class AudioEngine {
     this.playing.delete(id);
 	this.cancelLoopTimer(rec);
 
-    const fadeOutMs = Math.max(0, sOpts?.fadeOutMs ?? 0);
+    const fadeOutMs =
+      rec.kind !== "buffer" && !rec.started
+        ? 0
+        : Math.max(0, sOpts?.fadeOutMs ?? 0);
     const filePath = rec.file.path;
 
     if (rec.kind === "media-direct") {

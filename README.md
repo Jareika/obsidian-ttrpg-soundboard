@@ -49,12 +49,74 @@ Direct subfolders inside a top-level category are treated as playlists (except `
   - Volume
   - Loop playlist
   - Shuffle (optional)
+	- Random track loop (optional)
 
 #### Playlist shuffle
 - Shuffle can be enabled per playlist (not global).
 - If shuffle is enabled:
   - The track order is shuffled when the playlist starts.
   - When the playlist loops back to the beginning, the order is shuffled again.
+
+#### Random track loop
+- Can be enabled per playlist.
+- When started, the playlist selects one random track and loops that track continuously.
+- **Next** and **Previous** select another random track.
+- This also works with playlist buttons in notes:
+  - `#1-4` chooses randomly from tracks 1 through 4.
+  - `#3` loops track 3, because it is the only selected track.
+
+### JSON playlists (virtual playlists)
+In addition to folder-based playlists, the plugin supports virtual playlists
+stored as `*.playlist.json` files directly inside a top-level sound category.
+
+JSON playlists reference existing audio files instead of copying them into a
+playlist folder. The same audio file can therefore appear in any number of
+playlists, including multiple times in the same playlist.
+
+Example location:
+
+```text
+Soundbar/
+  Music/
+    Battle at the ruins.playlist.json
+```
+
+Example content:
+
+```json
+{
+  "format": "ttrpg-soundboard-playlist",
+  "version": 1,
+  "name": "Battle at the ruins",
+	"cover": "Soundbar/Thumbnails/Battle at the ruins.png",
+  "tracks": [
+    "Dungeon/Combat/Combat 01.ogg",
+    "Dungeon/Ambience/Drip.ogg",
+    "Dungeon/Combat/Combat 01.ogg"
+  ]
+}
+```
+
+Track paths are relative to the configured sound-library root. JSON playlists
+can be created and edited with:
+
+- the **Create or edit JSON playlist** command;
+- the playlist button in the soundboard toolbar;
+- the settings button on an existing JSON playlist tile or list row.
+
+The editor provides an expandable folder tree, add/preview/stop controls,
+reordering, deletion and an explicit target category. Missing tracks stay in
+the editor and are marked clearly, so they can be fixed without losing the
+remaining playlist order.
+
+An optional playlist cover can be selected through the vault image picker.
+The selected vault-relative image path is stored in the JSON playlist's
+optional `cover` property.
+
+In the Soundboard view, the options button for JSON playlists opens the same
+playback settings as folder-based playlists (fade in/out, volume, loop,
+shuffle and random-track loop). Right-click the options button to open the
+JSON playlist editor and change its tracks, name, category or cover.
 
 ### Shared thumbnail folder (optional)
 Some users prefer separating audio files and images.
@@ -89,16 +151,29 @@ Single sound:
   - Stops all currently playing sounds before starting this sound.
 - Optional image button:
   - `[Rain](ttrpg-sound:Soundbar/Dorf/Ambience/Rain.ogg "Soundbar/Thumbnails/rain.png")`
+  - `[Rain](ttrpg-sound:Soundbar/Dorf/Ambience/Rain.ogg "Soundbar/Thumbnails/rain.png | 64")`
+    - The optional number after `|` is the image height in pixels for this
+      button only. Without it, the global note-button icon size is used.
 
 Playlist:
 - `[BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight#1-4)`
 - `[BossFight](ttrpg-exclusive-playlist:Soundbar/Dungeon/BossFight#1-4)`
   - Stops all currently playing sounds before starting the playlist.
+- Playlists may also use an optional image:
+  - `[BossFight](ttrpg-playlist:Soundbar/Dungeon/BossFight "Soundbar/Thumbnails/boss.png | 72")`
 - `#N` plays a single track, `#A-B` plays a range.
+- Multiple track selections can be combined with commas:
+  - `#1,3,5-7`
+  - If **Random track loop** is enabled for the playlist, the range limits
+    the pool from which the looping random track is selected.
 
 In Reading View, these links are replaced by clickable buttons.
 
 You can set up buttons directly from every tile.
+You can also use the **Insert sound or playlist button into note** command.
+It opens a visual editor for selecting a sound or playlist, choosing individual
+playlist tracks, enabling exclusive playback, setting a custom label and
+optionally choosing a vault image with an individual size.
 
 ## Folder structure
 

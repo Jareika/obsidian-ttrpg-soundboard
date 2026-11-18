@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => TTRPGSoundboardPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian10 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // util/externalFiles.ts
 var import_obsidian = require("obsidian");
@@ -48,6 +48,16 @@ function isExternalAudioFile(file) {
 }
 function resolveExternalPath(path) {
   return getPath().resolve(path.trim());
+}
+function resolveExternalChildPath(rootPath, ...parts) {
+  const nodePath = getPath();
+  const root = nodePath.resolve(rootPath);
+  const result = nodePath.resolve(root, ...parts);
+  const relative = nodePath.relative(root, result);
+  if (relative === ".." || relative.startsWith("../") || relative.startsWith("..\\")) {
+    throw new Error("The playlist path must stay inside the sound library.");
+  }
+  return result;
 }
 async function assertExternalDirectory(path) {
   if (!canUseExternalFiles()) {
@@ -87,6 +97,16 @@ async function createExternalAudioFile(rootPath, absolutePath) {
       size: stat.size
     }
   };
+}
+async function readExternalFileText(absolutePath) {
+  const bytes = await getFs().promises.readFile(absolutePath);
+  return new TextDecoder().decode(bytes);
+}
+async function writeExternalFileText(absolutePath, content) {
+  await getFs().promises.writeFile(absolutePath, content, "utf8");
+}
+async function deleteExternalFile(absolutePath) {
+  await getFs().promises.unlink(absolutePath);
 }
 function canUseExternalFiles() {
   return import_obsidian.Platform.isDesktopApp;
@@ -131,6 +151,10 @@ async function readLibraryFileBinary(app, file) {
     bytes.byteOffset + bytes.byteLength
   );
 }
+function externalPathExists(path) {
+  if (!canUseExternalFiles() || !path.trim()) return false;
+  return getFs().existsSync(path);
+}
 function findExternalSiblingImage(audioFile, imageExtensions) {
   const nodePath = getPath();
   const parent = nodePath.dirname(audioFile.absolutePath);
@@ -162,6 +186,7 @@ var AudioEngine = class {
     this.masterGain = null;
     // Small cache of decoded AudioBuffers, with a configurable upper limit in MB.
     this.buffers = /* @__PURE__ */ new Map();
+    this.pendingBufferLoads = /* @__PURE__ */ new Map();
     this.bufferUsage = /* @__PURE__ */ new Map();
     // path -> approximate bytes
     this.totalBufferedBytes = 0;
@@ -170,6 +195,8 @@ var AudioEngine = class {
     this.mediaElementThresholdBytes = 25 * 1024 * 1024;
     this.iosLockscreenCompatibilityMode = false;
     this.playing = /* @__PURE__ */ new Map();
+    this.playbackGeneration = 0;
+    this.filePlaybackGenerations = /* @__PURE__ */ new Map();
     this.masterVolume = 1;
     this.listeners = /* @__PURE__ */ new Set();
     this.app = app;
@@ -271,6 +298,20 @@ var AudioEngine = class {
         return cached;
       }
     }
+    const existing = this.pendingBufferLoads.get(key);
+    if (existing) return existing;
+    const pending = this.loadUncachedBuffer(file);
+    this.pendingBufferLoads.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingBufferLoads.get(key) === pending) {
+        this.pendingBufferLoads.delete(key);
+      }
+    }
+  }
+  async loadUncachedBuffer(file) {
+    const key = file.path;
     const bin = await readLibraryFileBinary(this.app, file);
     await this.ensureContext();
     const ctx = this.ctx;
@@ -290,26 +331,87 @@ var AudioEngine = class {
   }
   // ===== Playback control =====
   async play(file, opts = {}) {
+    var _a;
+    const playbackGeneration = this.playbackGeneration;
+    const filePlaybackGeneration = (_a = this.filePlaybackGenerations.get(file.path)) != null ? _a : 0;
     if (this.iosLockscreenCompatibilityMode) {
-      return await this.playWithDirectMediaElement(file, opts);
+      return await this.playWithDirectMediaElement(
+        file,
+        opts,
+        playbackGeneration,
+        filePlaybackGeneration
+      );
     }
     const needsPreciseLoop = !!opts.loop && typeof opts.loopEndTrimSeconds === "number" && opts.loopEndTrimSeconds > 0;
     if (needsPreciseLoop) {
-      return await this.playWithBuffer(file, opts);
+      return await this.playWithBuffer(
+        file,
+        opts,
+        playbackGeneration,
+        filePlaybackGeneration
+      );
     }
     if (this.isLargeFile(file)) {
       try {
-        return await this.playWithMediaElement(file, opts);
+        return await this.playWithMediaElement(
+          file,
+          opts,
+          playbackGeneration,
+          filePlaybackGeneration
+        );
       } catch (e) {
-        return await this.playWithBuffer(file, opts);
+        if (!this.isPlaybackStartCurrent(
+          file.path,
+          playbackGeneration,
+          filePlaybackGeneration
+        )) {
+          return;
+        }
+        return await this.playWithBuffer(
+          file,
+          opts,
+          playbackGeneration,
+          filePlaybackGeneration
+        );
       }
     }
-    return await this.playWithBuffer(file, opts);
+    return await this.playWithBuffer(
+      file,
+      opts,
+      playbackGeneration,
+      filePlaybackGeneration
+    );
   }
-  async playWithBuffer(file, opts = {}) {
+  async playWithBuffer(file, opts, playbackGeneration, filePlaybackGeneration) {
     var _a, _b, _c;
     await this.ensureContext();
-    const buffer = await this.loadBuffer(file);
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    )) {
+      return;
+    }
+    let buffer;
+    try {
+      buffer = await this.loadBuffer(file);
+    } catch (err) {
+      if (!this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration
+      )) {
+        return;
+      }
+      throw err;
+    }
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    )) {
+      return;
+    }
     const ctx = this.ctx;
     const id = this.createId();
     const source = ctx.createBufferSource();
@@ -365,13 +467,19 @@ var AudioEngine = class {
       stop: (sOpts) => this.stopById(id, sOpts)
     };
   }
-  async playWithMediaElement(file, opts = {}) {
+  async playWithMediaElement(file, opts, playbackGeneration, filePlaybackGeneration) {
     var _a, _b, _c;
     await this.ensureContext();
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    )) {
+      return;
+    }
     const ctx = this.ctx;
     const id = this.createId();
-    const element = this.app.workspace.containerEl.createEl("audio");
-    element.detach();
+    const element = this.app.workspace.containerEl.ownerDocument.createElement("audio");
     element.preload = "auto";
     element.src = getLibraryFileResourcePath(this.app, file);
     const loopDelaySeconds = this.normalizeLoopDelaySeconds(opts.loopDelaySeconds);
@@ -392,6 +500,7 @@ var AudioEngine = class {
     }
     const rec = {
       kind: "media",
+      started: false,
       id,
       element,
       node,
@@ -431,16 +540,38 @@ var AudioEngine = class {
     } catch (err) {
       this.playing.delete(id);
       this.cleanupMediaRecord(rec);
+      if (!this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration
+      )) {
+        return;
+      }
       throw err;
     }
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    ) || !this.playing.has(id)) {
+      return;
+    }
+    rec.started = true;
     this.emit({ type: "start", filePath: file.path, id });
     return {
       id,
       stop: (sOpts) => this.stopById(id, sOpts)
     };
   }
-  async playWithDirectMediaElement(file, opts = {}) {
+  async playWithDirectMediaElement(file, opts, playbackGeneration, filePlaybackGeneration) {
     var _a, _b;
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    )) {
+      return;
+    }
     const id = this.createId();
     const element = this.app.workspace.containerEl.createEl("audio");
     element.addClass("ttrpg-sb-direct-media-element");
@@ -455,6 +586,7 @@ var AudioEngine = class {
     const fadeInMs = Math.max(0, (_b = opts.fadeInMs) != null ? _b : 0);
     const rec = {
       kind: "media-direct",
+      started: false,
       id,
       element,
       file,
@@ -523,8 +655,23 @@ var AudioEngine = class {
     } catch (err) {
       this.playing.delete(id);
       this.cleanupDirectMediaRecord(rec);
+      if (!this.isPlaybackStartCurrent(
+        file.path,
+        playbackGeneration,
+        filePlaybackGeneration
+      )) {
+        return;
+      }
       throw err;
     }
+    if (!this.isPlaybackStartCurrent(
+      file.path,
+      playbackGeneration,
+      filePlaybackGeneration
+    ) || !this.playing.has(id)) {
+      return;
+    }
+    rec.started = true;
     if (fadeInMs > 0) {
       this.animateDirectRecordToRaw(rec, targetVol, fadeInMs);
     }
@@ -535,6 +682,7 @@ var AudioEngine = class {
     };
   }
   async stopByFile(file, fadeOutMs = 0) {
+    this.invalidatePendingStartsForFile(file.path);
     const targets = [...this.playing.values()].filter(
       (p) => p.file.path === file.path
     );
@@ -543,6 +691,7 @@ var AudioEngine = class {
     );
   }
   async stopAll(fadeOutMs = 0) {
+    this.playbackGeneration++;
     const ids = [...this.playing.keys()];
     await Promise.all(ids.map((id) => this.stopById(id, { fadeOutMs })));
   }
@@ -607,8 +756,7 @@ var AudioEngine = class {
           const fadeSec = fadeMs / 1e3;
           if (fadeSec > 0) {
             const n = this.ctx.currentTime;
-            const cur = rec.gain.gain.value;
-            rec.lastVolume = cur > 0 ? cur : rec.lastVolume || 1;
+            const cur = rec.lastVolume === 0 ? 0 : rec.gain.gain.value;
             rec.gain.gain.cancelScheduledValues(n);
             rec.gain.gain.setValueAtTime(cur, n);
             rec.gain.gain.linearRampToValueAtTime(0, n + fadeSec);
@@ -667,7 +815,7 @@ var AudioEngine = class {
     if (!targets.length) return;
     const fadeMs = Math.max(0, fadeInMs);
     for (const rec of targets) {
-      const target = rec.lastVolume && rec.lastVolume > 0 ? rec.lastVolume : 1;
+      const target = rec.lastVolume;
       if (rec.kind === "media-direct") {
         this.resumeRecord(rec);
         if (fadeMs > 0) {
@@ -810,6 +958,15 @@ var AudioEngine = class {
   clamp01(v) {
     return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
   }
+  isPlaybackStartCurrent(filePath, playbackGeneration, filePlaybackGeneration) {
+    var _a;
+    return playbackGeneration === this.playbackGeneration && filePlaybackGeneration === ((_a = this.filePlaybackGenerations.get(filePath)) != null ? _a : 0);
+  }
+  invalidatePendingStartsForFile(filePath) {
+    var _a;
+    const generation = (_a = this.filePlaybackGenerations.get(filePath)) != null ? _a : 0;
+    this.filePlaybackGenerations.set(filePath, generation + 1);
+  }
   createId() {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -833,6 +990,7 @@ var AudioEngine = class {
     source.onended = () => {
       const existing = this.playing.get(rec.id);
       if (!existing || existing.kind !== "buffer") return;
+      if (existing.source !== source) return;
       if (existing.state !== "playing") return;
       if (existing.loop && existing.loopDelaySeconds.length > 0) {
         this.scheduleDelayedBufferLoop(existing);
@@ -971,7 +1129,7 @@ var AudioEngine = class {
     if (!rec) return Promise.resolve();
     this.playing.delete(id);
     this.cancelLoopTimer(rec);
-    const fadeOutMs = Math.max(0, (_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0);
+    const fadeOutMs = rec.kind !== "buffer" && !rec.started ? 0 : Math.max(0, (_a = sOpts == null ? void 0 : sOpts.fadeOutMs) != null ? _a : 0);
     const filePath = rec.file.path;
     if (rec.kind === "media-direct") {
       return new Promise((resolve) => {
@@ -1378,6 +1536,7 @@ var PlaylistSettingsModal = class extends import_obsidian3.Modal {
     const originalVol = vol;
     let loop = !!pref.loop;
     let shuffle = !!pref.shuffle;
+    let randomSingleTrackLoop = !!pref.randomSingleTrackLoop;
     let insertExclusiveButton = false;
     new import_obsidian3.Setting(contentEl).setName("Fade in (ms)").setDesc("Leave empty to use the global default.").addText(
       (ti) => ti.setPlaceholder(String(this.plugin.settings.defaultFadeInMs)).setValue(fadeInStr).onChange((v) => {
@@ -1405,6 +1564,13 @@ var PlaylistSettingsModal = class extends import_obsidian3.Modal {
         shuffle = v;
       })
     );
+    new import_obsidian3.Setting(contentEl).setName("Random track loop").setDesc(
+      "Choose one random track when the playlist starts and loop only that track continuously. Next and previous choose another random track. For note buttons, a range such as #1-4 limits the random selection to those tracks."
+    ).addToggle(
+      (tg) => tg.setValue(randomSingleTrackLoop).onChange((v) => {
+        randomSingleTrackLoop = v;
+      })
+    );
     new import_obsidian3.Setting(contentEl).setName("Insert playlist button").setDesc(
       "Inserts a button to your note to start a playlist directly."
     ).addToggle((tg) => {
@@ -1430,6 +1596,7 @@ var PlaylistSettingsModal = class extends import_obsidian3.Modal {
         delete pref.volume;
         delete pref.loop;
         delete pref.shuffle;
+        delete pref.randomSingleTrackLoop;
         this.plugin.setPlaylistPref(this.folderPath, pref);
         await this.plugin.saveSettings();
         this.plugin.refreshViews();
@@ -1448,6 +1615,11 @@ var PlaylistSettingsModal = class extends import_obsidian3.Modal {
         pref.loop = loop;
         if (shuffle) pref.shuffle = true;
         else delete pref.shuffle;
+        if (randomSingleTrackLoop) {
+          pref.randomSingleTrackLoop = true;
+        } else {
+          delete pref.randomSingleTrackLoop;
+        }
         this.plugin.setPlaylistPref(this.folderPath, pref);
         await this.plugin.saveSettings();
         this.plugin.refreshViews();
@@ -1481,7 +1653,7 @@ var SoundboardView = class extends import_obsidian4.ItemView {
   getIcon() {
     return "music";
   }
-  onOpen() {
+  async onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
     this.playingFiles = new Set(this.plugin.engine.getPlayingFilePaths());
     this.unsubEngine = this.plugin.engine.on((e) => {
@@ -1494,7 +1666,7 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     });
     this.render();
   }
-  onClose() {
+  async onClose() {
     var _a, _b;
     this.contentEl.removeClass("ttrpg-sb-view");
     (_a = this.unsubEngine) == null ? void 0 : _a.call(this);
@@ -1712,7 +1884,19 @@ var SoundboardView = class extends import_obsidian4.ItemView {
       text: "Stop all"
     });
     stopAllBtn.onclick = () => {
-      void this.plugin.engine.stopAll(this.plugin.settings.defaultFadeOutMs);
+      void this.plugin.stopAllPlayback();
+    };
+    const playlistEditorBtn = rowControls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Create or edit JSON playlist"
+      }
+    });
+    playlistEditorBtn.title = "Create or edit JSON playlist";
+    (0, import_obsidian4.setIcon)(playlistEditorBtn, "list-plus");
+    playlistEditorBtn.onclick = () => {
+      this.plugin.openJsonPlaylistEditor();
     };
     const masterGroup = rowControls.createDiv({ cls: "ttrpg-sb-slider-group" });
     masterGroup.createSpan({ cls: "ttrpg-sb-slider-label", text: "Master" });
@@ -1832,7 +2016,9 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
     tile.onclick = async () => {
       var _a2, _b;
-      await this.plugin.prepareBeforeStartingSingle(file);
+      if (!await this.plugin.prepareBeforeStartingSingle(file)) {
+        return;
+      }
       const baseVol = (_a2 = pref.volume) != null ? _a2 : 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
       await this.plugin.engine.play(file, {
@@ -1909,7 +2095,9 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     const loopDelaySeconds = this.plugin.getLoopDelaySecondsForPath(file.path);
     main.onclick = async () => {
       var _a2, _b;
-      await this.plugin.prepareBeforeStartingSingle(file);
+      if (!await this.plugin.prepareBeforeStartingSingle(file)) {
+        return;
+      }
       const baseVol = (_a2 = pref.volume) != null ? _a2 : 1;
       const effectiveVol = baseVol * (isAmbience ? this.plugin.settings.ambienceVolume : 1);
       await this.plugin.engine.play(file, {
@@ -2035,10 +2223,7 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     nextBtn.onclick = () => {
       void this.plugin.nextInPlaylist(pl);
     };
-    const gearBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
-    (0, import_obsidian4.setIcon)(gearBtn, "gear");
-    gearBtn.setAttr("aria-label", "Playlist settings");
-    gearBtn.onclick = () => new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
+    this.createPlaylistOptionsButton(controls, pl);
     const isActive = this.plugin.isPlaylistActive(pl.path);
     if (isActive) stopBtn.classList.add("playing");
   }
@@ -2069,15 +2254,34 @@ var SoundboardView = class extends import_obsidian4.ItemView {
     nextBtn.onclick = () => {
       void this.plugin.nextInPlaylist(pl);
     };
-    const gearBtn = controls.createEl("button", { cls: "ttrpg-sb-icon-btn push-right" });
-    (0, import_obsidian4.setIcon)(gearBtn, "gear");
-    gearBtn.setAttr("aria-label", "Playlist settings");
-    gearBtn.onclick = () => new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
+    this.createPlaylistOptionsButton(controls, pl);
     const isActive = this.plugin.isPlaylistActive(pl.path);
     if (isActive) {
       row.addClass("playing");
       stopBtn.classList.add("playing");
     }
+  }
+  createPlaylistOptionsButton(controls, pl) {
+    const button = controls.createEl("button", {
+      cls: "ttrpg-sb-icon-btn push-right",
+      attr: {
+        type: "button",
+        "aria-label": pl.kind === "json" ? "Playlist settings. Right-click to edit JSON playlist." : "Playlist settings"
+      }
+    });
+    (0, import_obsidian4.setIcon)(button, "gear");
+    button.title = pl.kind === "json" ? "Playlist settings (right-click: edit JSON playlist)" : "Playlist settings";
+    button.onclick = () => {
+      new PlaylistSettingsModal(this.app, this.plugin, pl.path).open();
+    };
+    if (pl.kind === "json") {
+      button.oncontextmenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.plugin.openJsonPlaylistEditor(pl.path);
+      };
+    }
+    return button;
   }
   updatePlayingVisuals() {
     const btns = this.contentEl.querySelectorAll(".ttrpg-sb-stop[data-path]");
@@ -2196,7 +2400,7 @@ var NowPlayingView = class extends import_obsidian5.ItemView {
   getIcon() {
     return "music-2";
   }
-  onOpen() {
+  async onOpen() {
     this.contentEl.addClass("ttrpg-sb-view");
     this.playingPaths = new Set(this.plugin.engine.getPlayingFilePaths());
     this.unsubEngine = this.plugin.engine.on(() => {
@@ -2205,7 +2409,7 @@ var NowPlayingView = class extends import_obsidian5.ItemView {
     });
     this.render();
   }
-  onClose() {
+  async onClose() {
     var _a;
     this.contentEl.removeClass("ttrpg-sb-view");
     (_a = this.unsubEngine) == null ? void 0 : _a.call(this);
@@ -2878,6 +3082,8 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
         break;
     }
     const requiresRescan = /* @__PURE__ */ new Set([
+      "soundLibraryLocation",
+      "externalSoundFolderPath",
       "rootFolder",
       "includeRootFiles",
       "folders",
@@ -3289,6 +3495,117 @@ var SoundboardSettingTab = class extends import_obsidian7.PluginSettingTab {
 
 // util/fileDiscovery.ts
 var import_obsidian8 = require("obsidian");
+
+// util/jsonPlaylists.ts
+var JSON_PLAYLIST_FORMAT = "ttrpg-soundboard-playlist";
+var JSON_PLAYLIST_VERSION = 1;
+var JSON_PLAYLIST_SUFFIX = ".playlist.json";
+function isJsonPlaylistFileName(name) {
+  return name.toLowerCase().endsWith(JSON_PLAYLIST_SUFFIX);
+}
+function getJsonPlaylistBaseName(fileName) {
+  if (!isJsonPlaylistFileName(fileName)) {
+    return fileName;
+  }
+  return fileName.slice(0, -JSON_PLAYLIST_SUFFIX.length);
+}
+function toJsonPlaylistFileName(name) {
+  const safeName = name.trim().replace(/[<>:"/\\|?*]/g, "-").split("").filter((character) => character.charCodeAt(0) >= 32).join("").replace(/\s+/g, " ").replace(/[. ]+$/g, "");
+  if (!safeName) {
+    throw new Error("A playlist name is required.");
+  }
+  return `${safeName}${JSON_PLAYLIST_SUFFIX}`;
+}
+function normalizeJsonPlaylistTrackPath(path) {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized) {
+    throw new Error("Playlist tracks must not use an empty path.");
+  }
+  if (normalized.split("/").includes("..")) {
+    throw new Error(`Playlist track path must not contain "..": ${path}`);
+  }
+  return normalized;
+}
+function normalizeJsonPlaylistCoverPath(path) {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized) {
+    throw new Error("Playlist cover path must not be empty.");
+  }
+  if (normalized.split("/").includes("..")) {
+    throw new Error(`Playlist cover path must not contain "..": ${path}`);
+  }
+  return normalized;
+}
+function parseJsonPlaylistDocument(text, sourceLabel = "playlist") {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`Invalid JSON in ${sourceLabel}.`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${sourceLabel} must contain a JSON object.`);
+  }
+  const value = raw;
+  if (value.format !== JSON_PLAYLIST_FORMAT) {
+    throw new Error(
+      `${sourceLabel} does not use the "${JSON_PLAYLIST_FORMAT}" format.`
+    );
+  }
+  if (value.version !== JSON_PLAYLIST_VERSION) {
+    throw new Error(
+      `${sourceLabel} uses unsupported playlist version "${String(value.version)}".`
+    );
+  }
+  if (typeof value.name !== "string" || !value.name.trim()) {
+    throw new Error(`${sourceLabel} needs a non-empty "name".`);
+  }
+  if (!Array.isArray(value.tracks)) {
+    throw new Error(`${sourceLabel} needs a "tracks" array.`);
+  }
+  const tracks = value.tracks.map((track, index) => {
+    if (typeof track !== "string") {
+      throw new Error(
+        `${sourceLabel}: track ${index + 1} must be a string path.`
+      );
+    }
+    return normalizeJsonPlaylistTrackPath(track);
+  });
+  let cover;
+  if (value.cover != null) {
+    if (typeof value.cover !== "string") {
+      throw new Error(`${sourceLabel}: "cover" must be a string path.`);
+    }
+    cover = normalizeJsonPlaylistCoverPath(value.cover);
+  }
+  return {
+    format: JSON_PLAYLIST_FORMAT,
+    version: JSON_PLAYLIST_VERSION,
+    name: value.name.trim(),
+    tracks,
+    ...cover ? { cover } : {}
+  };
+}
+function createJsonPlaylistDocument(name, tracks, coverPath) {
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    throw new Error("A playlist name is required.");
+  }
+  const cover = (coverPath == null ? void 0 : coverPath.trim()) ? normalizeJsonPlaylistCoverPath(coverPath) : void 0;
+  return {
+    format: JSON_PLAYLIST_FORMAT,
+    version: JSON_PLAYLIST_VERSION,
+    name: trimmedName,
+    tracks: tracks.map(normalizeJsonPlaylistTrackPath),
+    ...cover ? { cover } : {}
+  };
+}
+function stringifyJsonPlaylistDocument(document) {
+  return `${JSON.stringify(document, null, 2)}
+`;
+}
+
+// util/fileDiscovery.ts
 var IMG_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 var AMBIENCE_FOLDER_NAME = "ambience";
 function listSubfolders(app, rootFolder) {
@@ -3302,13 +3619,14 @@ async function buildLibrary(app, opts) {
   var _a, _b, _c;
   if (opts.location === "external") {
     return await buildLibraryFromExternalRoot(
+      app,
       (_a = opts.externalRootFolder) != null ? _a : "",
       opts.exts,
       !!opts.includeRootFiles
     );
   }
   if ((_b = opts.rootFolder) == null ? void 0 : _b.trim()) {
-    return buildLibraryFromRoot(
+    return await buildLibraryFromRoot(
       app,
       opts.rootFolder,
       opts.exts,
@@ -3323,26 +3641,52 @@ async function buildLibrary(app, opts) {
     opts.thumbnailFolder
   );
 }
-function buildLibraryFromRoot(app, rootFolder, extensions, includeRootFiles, thumbnailFolder) {
+async function buildLibraryFromRoot(app, rootFolder, extensions, includeRootFiles, thumbnailFolder) {
   const root = normalizeFolder(rootFolder);
   const top = listSubfolders(app, root);
   const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
   const byFolder = {};
   const allSingles = [];
+  const allAudioFiles = findAudioFilesUnderRoot(
+    app,
+    root,
+    extensions,
+    true
+  );
+  const audioByRelativePath = /* @__PURE__ */ new Map();
+  for (const file of allAudioFiles) {
+    const relative = getPathRelativeToRoot(root, file.path);
+    if (relative) {
+      audioByRelativePath.set(relative, file);
+    }
+  }
   if (includeRootFiles) {
     const rootSingles = filesDirectlyIn(app, root, exts);
     allSingles.push(...rootSingles);
   }
   for (const folder of top) {
     const files = filesDirectlyIn(app, folder, exts);
-    const { playlists, ambienceSingles } = directChildPlaylistsAndAmbienceSingles(
+    const { playlists: folderPlaylists, ambienceSingles } = directChildPlaylistsAndAmbienceSingles(
       app,
       folder,
       exts,
       thumbnailFolder
     );
+    const jsonPlaylists = await loadVaultJsonPlaylists(
+      app,
+      folder,
+      root,
+      audioByRelativePath,
+      thumbnailFolder
+    );
     const combinedSingles = [...files, ...ambienceSingles];
-    byFolder[folder] = { folder, files: combinedSingles, playlists };
+    byFolder[folder] = {
+      folder,
+      files: combinedSingles,
+      playlists: [...folderPlaylists, ...jsonPlaylists].sort(
+        (a, b) => a.name.localeCompare(b.name)
+      )
+    };
     allSingles.push(...combinedSingles);
   }
   return { rootFolder: root, topFolders: top, byFolder, allSingles };
@@ -3400,12 +3744,50 @@ function directChildPlaylistsAndAmbienceSingles(app, folderPath, exts, thumbnail
       name: sub.name,
       parent: folderPath,
       tracks,
-      cover
+      cover,
+      kind: "folder"
     });
   }
   playlists.sort((a, b) => a.name.localeCompare(b.name));
   ambienceSingles.sort((a, b) => a.path.localeCompare(b.path));
   return { playlists, ambienceSingles };
+}
+async function loadVaultJsonPlaylists(app, parentFolder, rootFolder, audioByRelativePath, thumbnailFolder) {
+  var _a;
+  const folder = app.vault.getAbstractFileByPath(parentFolder);
+  if (!(folder instanceof import_obsidian8.TFolder)) return [];
+  const playlistFiles = folder.children.filter(
+    (child) => child instanceof import_obsidian8.TFile && isJsonPlaylistFileName(child.name)
+  ).sort((a, b) => a.name.localeCompare(b.name));
+  const playlists = [];
+  for (const file of playlistFiles) {
+    try {
+      const document = parseJsonPlaylistDocument(
+        await app.vault.read(file),
+        file.path
+      );
+      const tracks = document.tracks.map(
+        (trackPath) => audioByRelativePath.get(normalizeJsonPlaylistTrackPath(trackPath))
+      ).filter((track) => !!track);
+      const coverBaseName = getJsonPlaylistBaseName(file.name);
+      const cover = (_a = findVaultImageByPath(app, document.cover)) != null ? _a : (thumbnailFolder == null ? void 0 : thumbnailFolder.trim()) ? findImageByBaseName(app, thumbnailFolder, coverBaseName) : findImageByBaseName(app, parentFolder, coverBaseName);
+      playlists.push({
+        path: file.path,
+        name: document.name,
+        parent: parentFolder,
+        tracks,
+        cover,
+        kind: "json",
+        definitionFile: file
+      });
+    } catch (err) {
+      console.warn(
+        `TTRPG Soundboard: ignored invalid JSON playlist "${file.path}".`,
+        err
+      );
+    }
+  }
+  return playlists;
 }
 function collectAudioRecursive(folder, exts) {
   const out = [];
@@ -3449,7 +3831,26 @@ function findImageByBaseName(app, folderPath, baseName) {
   }
   return void 0;
 }
-async function buildLibraryFromExternalRoot(externalRootFolder, extensions, includeRootFiles) {
+function findAudioFilesUnderRoot(app, rootFolder, extensions, includeRootFiles = false) {
+  var _a, _b;
+  const root = normalizeFolder(rootFolder);
+  const exts = new Set(extensions.map((e) => e.toLowerCase().replace(/^\./, "")));
+  const out = [];
+  for (const f of app.vault.getAllLoadedFiles()) {
+    if (!(f instanceof import_obsidian8.TFile)) continue;
+    const ext = (f.extension || "").toLowerCase();
+    if (!exts.has(ext)) continue;
+    if (f.path === root || f.path.startsWith(root + "/")) {
+      if (!includeRootFiles) {
+        const parent = (_b = (_a = f.parent) == null ? void 0 : _a.path) != null ? _b : "";
+        if (parent === root) continue;
+      }
+      out.push(f);
+    }
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function buildLibraryFromExternalRoot(app, externalRootFolder, extensions, includeRootFiles) {
   if (!externalRootFolder.trim()) {
     throw new Error("No external sound folder has been configured.");
   }
@@ -3463,6 +3864,11 @@ async function buildLibraryFromExternalRoot(externalRootFolder, extensions, incl
   const topFolders = topFolderEntries.map((entry) => entry.name);
   const byFolder = {};
   const allSingles = [];
+  const allAudioFiles = await collectExternalAudioRecursive(root, root, exts);
+  const audioByRelativePath = /* @__PURE__ */ new Map();
+  for (const file of allAudioFiles) {
+    audioByRelativePath.set(file.path, file);
+  }
   if (includeRootFiles) {
     const rootSingles = await externalFilesDirectlyIn(root, root, exts);
     allSingles.push(...rootSingles);
@@ -3474,11 +3880,18 @@ async function buildLibraryFromExternalRoot(externalRootFolder, extensions, incl
       folderEntry.absolutePath,
       exts
     );
-    const { playlists, ambienceSingles } = await externalChildPlaylistsAndAmbienceSingles(
+    const { playlists: folderPlaylists, ambienceSingles } = await externalChildPlaylistsAndAmbienceSingles(
       root,
       folderPath,
       folderEntry.absolutePath,
       exts
+    );
+    const jsonPlaylists = await loadExternalJsonPlaylists(
+      app,
+      root,
+      folderPath,
+      folderEntry.absolutePath,
+      audioByRelativePath
     );
     const files = [...directFiles, ...ambienceSingles].sort(
       (a, b) => a.path.localeCompare(b.path)
@@ -3486,7 +3899,9 @@ async function buildLibraryFromExternalRoot(externalRootFolder, extensions, incl
     byFolder[folderPath] = {
       folder: folderPath,
       files,
-      playlists
+      playlists: [...folderPlaylists, ...jsonPlaylists].sort(
+        (a, b) => a.name.localeCompare(b.name)
+      )
     };
     allSingles.push(...files);
   }
@@ -3537,7 +3952,8 @@ async function externalChildPlaylistsAndAmbienceSingles(rootPath, parentRelative
       name: folder.name,
       parent: parentRelativePath,
       tracks,
-      cover
+      cover,
+      kind: "folder"
     });
   }
   ambienceSingles.sort((a, b) => a.path.localeCompare(b.path));
@@ -3586,6 +4002,51 @@ async function findExternalCoverImage(rootPath, playlistFolderPath) {
   if (!firstImage) return void 0;
   return await createExternalAudioFile(rootPath, firstImage.absolutePath);
 }
+async function loadExternalJsonPlaylists(app, rootPath, parentRelativePath, parentAbsolutePath, audioByRelativePath) {
+  const entries = await readExternalDirectory(parentAbsolutePath);
+  const playlistEntries = entries.filter(
+    (entry) => entry.isFile && isJsonPlaylistFileName(entry.name)
+  ).sort((a, b) => a.name.localeCompare(b.name));
+  const playlists = [];
+  for (const entry of playlistEntries) {
+    try {
+      const definitionFile = await createExternalAudioFile(
+        rootPath,
+        entry.absolutePath
+      );
+      const document = parseJsonPlaylistDocument(
+        await readExternalFileText(entry.absolutePath),
+        definitionFile.path
+      );
+      const tracks = document.tracks.map(
+        (trackPath) => audioByRelativePath.get(normalizeJsonPlaylistTrackPath(trackPath))
+      ).filter((track) => !!track);
+      playlists.push({
+        path: definitionFile.path,
+        name: document.name,
+        parent: parentRelativePath,
+        tracks,
+        cover: findVaultImageByPath(app, document.cover),
+        kind: "json",
+        definitionFile
+      });
+    } catch (err) {
+      console.warn(
+        `TTRPG Soundboard: ignored invalid JSON playlist "${entry.absolutePath}".`,
+        err
+      );
+    }
+  }
+  return playlists;
+}
+function findVaultImageByPath(app, path) {
+  if (!path) return void 0;
+  const file = app.vault.getAbstractFileByPath(path);
+  if (file instanceof import_obsidian8.TFile && IMG_EXTS.includes(file.extension.toLowerCase())) {
+    return file;
+  }
+  return void 0;
+}
 function getExtension(name) {
   const lastDot = name.lastIndexOf(".");
   if (lastDot < 0 || lastDot === name.length - 1) return "";
@@ -3594,6 +4055,11 @@ function getExtension(name) {
 function normalizeFolder(p) {
   if (!p) return "";
   return (0, import_obsidian8.normalizePath)(p);
+}
+function getPathRelativeToRoot(rootFolder, fullPath) {
+  if (fullPath === rootFolder) return "";
+  if (!fullPath.startsWith(`${rootFolder}/`)) return null;
+  return fullPath.slice(rootFolder.length + 1);
 }
 
 // ui/QuickPlayModal.ts
@@ -3616,6 +4082,905 @@ var QuickPlayModal = class extends import_obsidian9.FuzzySuggestModal {
   }
   onChooseItem(item) {
     void this.plugin.playFromQuickPicker(item.file);
+  }
+};
+
+// ui/JsonPlaylistEditorModal.ts
+var import_obsidian11 = require("obsidian");
+
+// ui/VaultImagePickerModal.ts
+var import_obsidian10 = require("obsidian");
+var VaultImagePickerModal = class extends import_obsidian10.FuzzySuggestModal {
+  constructor(app, onChoose) {
+    super(app);
+    this.onChoose = onChoose;
+    this.items = app.vault.getAllLoadedFiles().filter(
+      (file) => file instanceof import_obsidian10.TFile && IMG_EXTS.includes(file.extension.toLowerCase())
+    ).sort((a, b) => a.path.localeCompare(b.path));
+    this.setPlaceholder("Search vault image\u2026");
+  }
+  getItems() {
+    return this.items;
+  }
+  getItemText(file) {
+    return file.path;
+  }
+  onChooseItem(file) {
+    this.onChoose(file);
+  }
+};
+
+// ui/JsonPlaylistEditorModal.ts
+var JsonPlaylistEditorModal = class extends import_obsidian11.Modal {
+  constructor(app, plugin, existingPlaylistPath) {
+    super(app);
+    this.selectedTracks = [];
+    this.coverPath = "";
+    this.plugin = plugin;
+    this.loadedPlaylistPath = existingPlaylistPath;
+    this.titleEl.setText("JSON playlist editor");
+  }
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("ttrpg-sb-playlist-editor");
+    const folders = this.plugin.library.topFolders;
+    if (!folders.length) {
+      contentEl.createEl("p", {
+        text: "No top-level sound-library folders are available yet."
+      });
+      return;
+    }
+    this.renderForm(folders);
+    if (this.loadedPlaylistPath) {
+      await this.loadExistingPlaylist(this.loadedPlaylistPath);
+    } else {
+      this.renderSourceTracks();
+      this.renderSelectedTracks();
+    }
+  }
+  onClose() {
+    this.contentEl.removeClass("ttrpg-sb-playlist-editor");
+  }
+  renderForm(folders) {
+    var _a;
+    const { contentEl } = this;
+    const metadata = contentEl.createDiv({
+      cls: "ttrpg-sb-playlist-editor-meta"
+    });
+    const nameRow = metadata.createDiv({
+      cls: "ttrpg-sb-playlist-editor-field"
+    });
+    nameRow.createSpan({ text: "Playlist name" });
+    this.nameInput = nameRow.createEl("input", {
+      type: "text",
+      placeholder: "Battle at the ruins"
+    });
+    const targetRow = metadata.createDiv({
+      cls: "ttrpg-sb-playlist-editor-field"
+    });
+    targetRow.createSpan({ text: "Save in category" });
+    this.targetFolderSelect = this.createFolderSelect(
+      targetRow,
+      folders,
+      "Save in category"
+    );
+    const existingRow = metadata.createDiv({
+      cls: "ttrpg-sb-playlist-editor-field"
+    });
+    existingRow.createSpan({ text: "Load existing JSON playlist" });
+    this.existingPlaylistSelect = existingRow.createEl("select");
+    this.existingPlaylistSelect.createEl("option", {
+      value: "",
+      text: "Create a new playlist"
+    });
+    for (const playlist of this.getJsonPlaylists()) {
+      this.existingPlaylistSelect.createEl("option", {
+        value: playlist.path,
+        text: `${this.getFolderLabel(playlist.parent)} \u2014 ${playlist.name}`
+      });
+    }
+    this.existingPlaylistSelect.value = (_a = this.loadedPlaylistPath) != null ? _a : "";
+    this.existingPlaylistSelect.onchange = () => {
+      const path = this.existingPlaylistSelect.value || void 0;
+      if (!path) {
+        this.loadedPlaylistPath = void 0;
+        this.selectedTracks = [];
+        this.coverPath = "";
+        this.nameInput.value = "";
+        this.updateCoverPathInput();
+        if (this.deleteButton) {
+          this.deleteButton.disabled = true;
+        }
+        this.renderSelectedTracks();
+        return;
+      }
+      void this.loadExistingPlaylist(path);
+    };
+    const sourceRow = metadata.createDiv({
+      cls: "ttrpg-sb-playlist-editor-field"
+    });
+    sourceRow.createSpan({ text: "Source category" });
+    this.sourceFolderSelect = this.createFolderSelect(
+      sourceRow,
+      folders,
+      "Source category"
+    );
+    this.sourceFolderSelect.onchange = () => {
+      this.renderSourceTracks();
+    };
+    const coverRow = metadata.createDiv({
+      cls: "ttrpg-sb-playlist-editor-field ttrpg-sb-playlist-editor-cover-field"
+    });
+    coverRow.createSpan({ text: "Cover image (optional)" });
+    const coverControls = coverRow.createDiv({
+      cls: "ttrpg-sb-playlist-editor-cover-controls"
+    });
+    this.coverPathInput = coverControls.createEl("input", {
+      type: "text",
+      attr: {
+        readonly: "true",
+        "aria-label": "Selected vault cover image"
+      }
+    });
+    this.updateCoverPathInput();
+    const chooseCoverButton = coverControls.createEl("button", {
+      text: "Choose vault image",
+      attr: { type: "button" }
+    });
+    chooseCoverButton.onclick = () => {
+      new VaultImagePickerModal(this.app, (file) => {
+        this.coverPath = file.path;
+        this.updateCoverPathInput();
+      }).open();
+    };
+    const clearCoverButton = coverControls.createEl("button", {
+      text: "Clear",
+      attr: { type: "button" }
+    });
+    clearCoverButton.onclick = () => {
+      this.coverPath = "";
+      this.updateCoverPathInput();
+    };
+    const columns = contentEl.createDiv({
+      cls: "ttrpg-sb-playlist-editor-columns"
+    });
+    const sourceColumn = columns.createDiv({
+      cls: "ttrpg-sb-playlist-editor-column"
+    });
+    sourceColumn.createEl("h3", { text: "Available tracks" });
+    this.sourceListEl = sourceColumn.createDiv({
+      cls: "ttrpg-sb-playlist-editor-list"
+    });
+    const selectedColumn = columns.createDiv({
+      cls: "ttrpg-sb-playlist-editor-column"
+    });
+    const selectedHeading = selectedColumn.createDiv({
+      cls: "ttrpg-sb-playlist-editor-selected-heading"
+    });
+    selectedHeading.createEl("h3", { text: "Playlist tracks" });
+    this.selectedCountEl = selectedHeading.createSpan();
+    this.selectedListEl = selectedColumn.createDiv({
+      cls: "ttrpg-sb-playlist-editor-list"
+    });
+    const actions = contentEl.createDiv({
+      cls: "ttrpg-sb-playlist-editor-actions"
+    });
+    this.deleteButton = actions.createEl("button", {
+      text: "Delete",
+      attr: { type: "button" }
+    });
+    this.deleteButton.disabled = !this.loadedPlaylistPath;
+    this.deleteButton.onclick = () => {
+      void this.deleteLoadedPlaylist();
+    };
+    const cancelButton = actions.createEl("button", {
+      text: "Cancel",
+      attr: { type: "button" }
+    });
+    cancelButton.onclick = () => this.close();
+    const saveButton = actions.createEl("button", {
+      cls: "mod-cta",
+      text: "Save playlist",
+      attr: { type: "button" }
+    });
+    saveButton.onclick = () => {
+      void this.savePlaylist();
+    };
+  }
+  createFolderSelect(parent, folders, label) {
+    const select = parent.createEl("select", {
+      cls: "dropdown",
+      attr: {
+        "aria-label": label
+      }
+    });
+    for (const folder of folders) {
+      select.createEl("option", {
+        value: folder,
+        text: this.getFolderLabel(folder)
+      });
+    }
+    return select;
+  }
+  updateCoverPathInput() {
+    if (!this.coverPathInput) return;
+    this.coverPathInput.value = this.coverPath;
+    this.coverPathInput.placeholder = "No cover image selected";
+    this.coverPathInput.title = this.coverPath;
+  }
+  getFolderLabel(folder) {
+    const root = this.plugin.library.rootFolder;
+    if (root && folder.startsWith(`${root}/`)) {
+      return folder.slice(root.length + 1);
+    }
+    return folder;
+  }
+  getJsonPlaylists() {
+    const playlists = [];
+    for (const folder of this.plugin.library.topFolders) {
+      const content = this.plugin.library.byFolder[folder];
+      if (!content) continue;
+      playlists.push(
+        ...content.playlists.filter((playlist) => playlist.kind === "json")
+      );
+    }
+    return playlists.sort((a, b) => {
+      const byParent = a.parent.localeCompare(b.parent);
+      return byParent !== 0 ? byParent : a.name.localeCompare(b.name);
+    });
+  }
+  async loadExistingPlaylist(path) {
+    var _a;
+    try {
+      const document = await this.plugin.loadJsonPlaylistDocument(path);
+      const playlist = this.plugin.findPlaylistByPath(path);
+      if (!playlist) {
+        throw new Error("The selected playlist no longer exists.");
+      }
+      this.loadedPlaylistPath = path;
+      this.nameInput.value = document.name;
+      this.targetFolderSelect.value = playlist.parent;
+      this.sourceFolderSelect.value = playlist.parent;
+      this.coverPath = (_a = document.cover) != null ? _a : "";
+      this.updateCoverPathInput();
+      this.selectedTracks = document.tracks.map((storedPath) => ({
+        storedPath,
+        file: this.plugin.resolveJsonPlaylistTrackPath(storedPath)
+      }));
+      this.existingPlaylistSelect.value = path;
+      if (this.deleteButton) {
+        this.deleteButton.disabled = false;
+      }
+      this.renderSourceTracks();
+      this.renderSelectedTracks();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new import_obsidian11.Notice(`Could not load JSON playlist: ${message}`);
+    }
+  }
+  /**
+   * Only the source pane is rebuilt when its dropdown changes. The selected
+   * track pane remains untouched, so its order and scroll position stay put.
+   */
+  renderSourceTracks() {
+    const previousScrollTop = this.sourceListEl.scrollTop;
+    this.sourceListEl.empty();
+    const sourceFolder = this.sourceFolderSelect.value;
+    const files = this.plugin.getAllAudioFiles().filter(
+      (file) => file.path === sourceFolder || file.path.startsWith(`${sourceFolder}/`)
+    ).sort((a, b) => a.path.localeCompare(b.path));
+    if (!files.length) {
+      this.sourceListEl.createDiv({
+        cls: "ttrpg-sb-playlist-editor-empty",
+        text: "No audio files found in this category."
+      });
+      return;
+    }
+    const rootNode = {
+      files: [],
+      folders: /* @__PURE__ */ new Map()
+    };
+    for (const file of files) {
+      const relativePath = file.path.slice(sourceFolder.length).replace(/^\/+/, "");
+      const parts = relativePath.split("/").filter(Boolean);
+      const fileName = parts.pop();
+      if (!fileName) continue;
+      let node = rootNode;
+      for (const part of parts) {
+        let child = node.folders.get(part);
+        if (!child) {
+          child = { files: [], folders: /* @__PURE__ */ new Map() };
+          node.folders.set(part, child);
+        }
+        node = child;
+      }
+      node.files.push(file);
+    }
+    this.renderTrackTreeNode(this.sourceListEl, rootNode, true);
+    window.requestAnimationFrame(() => {
+      if (this.sourceListEl.isConnected) {
+        this.sourceListEl.scrollTop = previousScrollTop;
+      }
+    });
+  }
+  renderTrackTreeNode(parent, node, isRoot = false) {
+    for (const file of node.files.sort(
+      (a, b) => a.basename.localeCompare(b.basename)
+    )) {
+      this.renderAvailableTrack(parent, file);
+    }
+    for (const [name, child] of [...node.folders.entries()].sort(
+      ([a], [b]) => a.localeCompare(b)
+    )) {
+      const details = parent.createEl("details", {
+        cls: "ttrpg-sb-playlist-editor-folder"
+      });
+      details.open = isRoot;
+      details.createEl("summary", { text: name });
+      const children = details.createDiv({
+        cls: "ttrpg-sb-playlist-editor-folder-children"
+      });
+      this.renderTrackTreeNode(children, child);
+    }
+  }
+  renderAvailableTrack(parent, file) {
+    const row = parent.createDiv({
+      cls: "ttrpg-sb-playlist-editor-track-row"
+    });
+    row.createSpan({
+      cls: "ttrpg-sb-playlist-editor-track-name",
+      text: file.basename,
+      title: file.path
+    });
+    const addButton = this.createIconButton(
+      row,
+      "plus",
+      "Add track to playlist"
+    );
+    addButton.onclick = () => {
+      this.selectedTracks.push({
+        storedPath: this.plugin.getJsonPlaylistTrackPath(file),
+        file
+      });
+      this.renderSelectedTracks();
+    };
+    const playButton = this.createIconButton(row, "play", "Preview track");
+    playButton.onclick = () => {
+      void this.plugin.playFromQuickPicker(file);
+    };
+    const stopButton = this.createIconButton(row, "square", "Stop track");
+    stopButton.onclick = () => {
+      var _a;
+      const pref = this.plugin.getSoundPref(file.path);
+      void this.plugin.engine.stopByFile(
+        file,
+        (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs
+      );
+    };
+  }
+  /**
+   * Track additions/removals/reordering rebuild only this independently
+   * scrollable pane. The modal itself and the expandable source tree are not
+   * rerendered, preventing the user from being sent back to the beginning.
+   */
+  renderSelectedTracks() {
+    const previousScrollTop = this.selectedListEl.scrollTop;
+    this.selectedListEl.empty();
+    this.selectedCountEl.setText(`${this.selectedTracks.length} tracks`);
+    if (!this.selectedTracks.length) {
+      this.selectedListEl.createDiv({
+        cls: "ttrpg-sb-playlist-editor-empty",
+        text: "Add tracks from the source list."
+      });
+      return;
+    }
+    this.selectedTracks.forEach((entry, index) => {
+      const row = this.selectedListEl.createDiv({
+        cls: "ttrpg-sb-playlist-editor-track-row"
+      });
+      row.createSpan({
+        cls: "ttrpg-sb-playlist-editor-track-index",
+        text: `${index + 1}.`
+      });
+      row.createSpan({
+        cls: entry.file ? "ttrpg-sb-playlist-editor-track-name" : "ttrpg-sb-playlist-editor-track-name is-missing",
+        text: entry.file ? entry.file.basename : `Missing: ${entry.storedPath}`,
+        title: entry.storedPath
+      });
+      const upButton = this.createIconButton(row, "arrow-up", "Move up");
+      upButton.disabled = index === 0;
+      upButton.onclick = () => {
+        this.moveTrack(index, index - 1);
+      };
+      const downButton = this.createIconButton(
+        row,
+        "arrow-down",
+        "Move down"
+      );
+      downButton.disabled = index === this.selectedTracks.length - 1;
+      downButton.onclick = () => {
+        this.moveTrack(index, index + 1);
+      };
+      if (entry.file) {
+        const playButton = this.createIconButton(row, "play", "Preview track");
+        playButton.onclick = () => {
+          void this.plugin.playFromQuickPicker(entry.file);
+        };
+        const stopButton = this.createIconButton(row, "square", "Stop track");
+        stopButton.onclick = () => {
+          var _a;
+          const pref = this.plugin.getSoundPref(entry.file.path);
+          void this.plugin.engine.stopByFile(
+            entry.file,
+            (_a = pref.fadeOutMs) != null ? _a : this.plugin.settings.defaultFadeOutMs
+          );
+        };
+      }
+      const removeButton = this.createIconButton(row, "x", "Remove track");
+      removeButton.onclick = () => {
+        this.selectedTracks.splice(index, 1);
+        this.renderSelectedTracks();
+      };
+    });
+    window.requestAnimationFrame(() => {
+      if (this.selectedListEl.isConnected) {
+        this.selectedListEl.scrollTop = previousScrollTop;
+      }
+    });
+  }
+  moveTrack(from, to) {
+    if (to < 0 || to >= this.selectedTracks.length) return;
+    const [entry] = this.selectedTracks.splice(from, 1);
+    this.selectedTracks.splice(to, 0, entry);
+    this.renderSelectedTracks();
+  }
+  createIconButton(parent, icon, label) {
+    const button = parent.createEl("button", {
+      cls: "ttrpg-sb-icon-btn",
+      attr: {
+        type: "button",
+        "aria-label": label
+      }
+    });
+    button.title = label;
+    (0, import_obsidian11.setIcon)(button, icon);
+    return button;
+  }
+  async savePlaylist() {
+    try {
+      const path = await this.plugin.saveJsonPlaylist({
+        existingPlaylistPath: this.loadedPlaylistPath,
+        parentFolder: this.targetFolderSelect.value,
+        name: this.nameInput.value,
+        tracks: this.selectedTracks.map((track) => track.storedPath),
+        coverPath: this.coverPath || void 0
+      });
+      new import_obsidian11.Notice("JSON playlist saved.");
+      this.loadedPlaylistPath = path;
+      this.close();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new import_obsidian11.Notice(`Could not save JSON playlist: ${message}`);
+    }
+  }
+  async deleteLoadedPlaylist() {
+    if (!this.loadedPlaylistPath) return;
+    try {
+      await this.plugin.deleteJsonPlaylist(this.loadedPlaylistPath);
+      new import_obsidian11.Notice("JSON playlist deleted.");
+      this.close();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new import_obsidian11.Notice(`Could not delete JSON playlist: ${message}`);
+    }
+  }
+};
+
+// ui/NoteButtonDesignerModal.ts
+var import_obsidian12 = require("obsidian");
+var NoteButtonDesignerModal = class extends import_obsidian12.Modal {
+  constructor(app, plugin, onInsert) {
+    super(app);
+    this.targetKind = "sound";
+    this.selectedTrackIndices = /* @__PURE__ */ new Set();
+    this.imagePath = "";
+    this.plugin = plugin;
+    this.onInsert = onInsert;
+    this.titleEl.setText("Insert soundboard button");
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("ttrpg-sb-note-button-designer");
+    const categories = this.plugin.library.topFolders;
+    if (!categories.length) {
+      contentEl.createEl("p", {
+        text: "No sound-library categories are available yet."
+      });
+      return;
+    }
+    const fields = contentEl.createDiv({
+      cls: "ttrpg-sb-note-button-designer-fields"
+    });
+    this.createTargetKindField(fields);
+    this.createCategoryField(fields, categories);
+    this.createTargetField(fields);
+    this.createLabelField(fields);
+    this.createExclusiveField(fields);
+    this.createImageField(fields);
+    this.createImageSizeField(fields);
+    this.playlistTrackSection = contentEl.createDiv({
+      cls: "ttrpg-sb-note-button-designer-tracks"
+    });
+    this.playlistTrackSection.createEl("h3", {
+      text: "Playlist tracks"
+    });
+    this.playlistTrackSection.createEl("p", {
+      text: "Leave all tracks selected to play the complete playlist.",
+      cls: "setting-item-description"
+    });
+    this.playlistTrackList = this.playlistTrackSection.createDiv({
+      cls: "ttrpg-sb-playlist-editor-list"
+    });
+    const actions = contentEl.createDiv({
+      cls: "ttrpg-sb-playlist-editor-actions"
+    });
+    const cancelButton = actions.createEl("button", {
+      text: "Cancel",
+      attr: { type: "button" }
+    });
+    cancelButton.onclick = () => this.close();
+    const insertButton = actions.createEl("button", {
+      cls: "mod-cta",
+      text: "Insert button",
+      attr: { type: "button" }
+    });
+    insertButton.onclick = () => this.insertButton();
+    this.refreshTargetOptions();
+  }
+  onClose() {
+    this.contentEl.removeClass("ttrpg-sb-note-button-designer");
+  }
+  createTargetKindField(parent) {
+    const field = this.createField(parent, "Button type");
+    this.targetKindSelect = field.createEl("select", {
+      cls: "dropdown",
+      attr: { "aria-label": "Button type" }
+    });
+    this.targetKindSelect.createEl("option", {
+      value: "sound",
+      text: "Single sound"
+    });
+    this.targetKindSelect.createEl("option", {
+      value: "playlist",
+      text: "Playlist"
+    });
+    this.targetKindSelect.value = this.targetKind;
+    this.targetKindSelect.onchange = () => {
+      this.targetKind = this.targetKindSelect.value === "playlist" ? "playlist" : "sound";
+      this.refreshTargetOptions();
+    };
+  }
+  createCategoryField(parent, categories) {
+    const field = this.createField(parent, "Category");
+    this.categorySelect = field.createEl("select", {
+      cls: "dropdown",
+      attr: { "aria-label": "Sound-library category" }
+    });
+    for (const category of categories) {
+      this.categorySelect.createEl("option", {
+        value: category,
+        text: this.getCategoryLabel(category)
+      });
+    }
+    this.categorySelect.onchange = () => {
+      this.refreshTargetOptions();
+    };
+  }
+  createTargetField(parent) {
+    const field = this.createField(parent, "Sound or playlist");
+    this.targetSelect = field.createEl("select", {
+      cls: "dropdown",
+      attr: { "aria-label": "Selected sound or playlist" }
+    });
+    this.targetSelect.onchange = () => {
+      this.updateDefaultLabel();
+      this.renderPlaylistTrackSelection();
+    };
+  }
+  createLabelField(parent) {
+    const field = this.createField(parent, "Button label");
+    this.labelInput = field.createEl("input", {
+      type: "text",
+      placeholder: "Button label",
+      attr: { "aria-label": "Button label" }
+    });
+  }
+  createExclusiveField(parent) {
+    const field = this.createField(parent, "Playback behavior");
+    field.createSpan({
+      cls: "ttrpg-sb-note-button-designer-description"
+    });
+    const label = field.createEl("label", {
+      cls: "ttrpg-sb-note-button-designer-checkbox"
+    });
+    this.exclusiveToggle = label.createEl("input", {
+      type: "checkbox",
+      cls: "ttrpg-sb-note-button-designer-checkbox-input",
+      attr: {
+        "aria-label": "Stop all other sounds before starting"
+      }
+    });
+    label.createSpan({
+      text: "Stop all other sounds before starting"
+    });
+  }
+  createImageField(parent) {
+    const field = this.createField(parent, "Button image (optional)");
+    const controls = field.createDiv({
+      cls: "ttrpg-sb-playlist-editor-cover-controls"
+    });
+    this.imagePathInput = controls.createEl("input", {
+      type: "text",
+      attr: {
+        readonly: "true",
+        "aria-label": "Selected button image"
+      }
+    });
+    this.updateImagePathInput();
+    const chooseButton = controls.createEl("button", {
+      text: "Choose vault image",
+      attr: { type: "button" }
+    });
+    chooseButton.onclick = () => {
+      new VaultImagePickerModal(this.app, (file) => {
+        this.imagePath = file.path;
+        this.updateImagePathInput();
+      }).open();
+    };
+    const clearButton = controls.createEl("button", {
+      text: "Clear",
+      attr: { type: "button" }
+    });
+    clearButton.onclick = () => {
+      this.imagePath = "";
+      this.updateImagePathInput();
+    };
+  }
+  createImageSizeField(parent) {
+    const field = this.createField(
+      parent,
+      "Image size in px (optional)",
+      "ttrpg-sb-note-button-designer-image-size"
+    );
+    field.createSpan({
+      cls: "ttrpg-sb-note-button-designer-description",
+      text: "Overrides the global note-button icon size for this button only."
+    });
+    this.imageSizeInput = field.createEl("input", {
+      type: "number",
+      attr: {
+        min: "8",
+        max: "512",
+        step: "1",
+        "aria-label": "Button image size in pixels"
+      },
+      placeholder: "Uses global size"
+    });
+  }
+  createField(parent, label, className = "") {
+    const field = parent.createDiv({
+      cls: `ttrpg-sb-playlist-editor-field ${className}`.trim()
+    });
+    field.createSpan({ text: label });
+    return field;
+  }
+  refreshTargetOptions() {
+    const options = this.getTargetOptions();
+    this.targetSelect.empty();
+    for (const option of options) {
+      this.targetSelect.createEl("option", {
+        value: option.value,
+        text: option.label
+      });
+    }
+    if (!options.length) {
+      this.targetSelect.createEl("option", {
+        value: "",
+        text: this.targetKind === "sound" ? "No sounds found in this category" : "No playlists found in this category"
+      });
+      this.targetSelect.disabled = true;
+    } else {
+      this.targetSelect.disabled = false;
+      this.targetSelect.value = options[0].value;
+    }
+    this.updateDefaultLabel();
+    this.renderPlaylistTrackSelection();
+  }
+  getTargetOptions() {
+    const category = this.categorySelect.value;
+    if (this.targetKind === "playlist") {
+      const content = this.plugin.library.byFolder[category];
+      if (!content) return [];
+      return content.playlists.map((playlist) => ({
+        value: playlist.path,
+        label: `${playlist.name} (${playlist.tracks.length} tracks)`
+      }));
+    }
+    return this.plugin.getAllAudioFiles().filter(
+      (file) => file.path === category || file.path.startsWith(`${category}/`)
+    ).sort((a, b) => a.path.localeCompare(b.path)).map((file) => ({
+      value: file.path,
+      label: this.getFileLabel(file, category)
+    }));
+  }
+  getFileLabel(file, category) {
+    const relative = file.path.slice(category.length).replace(/^\/+/, "");
+    return relative ? `${file.basename} \u2014 ${relative}` : file.basename;
+  }
+  getCategoryLabel(category) {
+    const root = this.plugin.library.rootFolder;
+    if (root && category.startsWith(`${root}/`)) {
+      return category.slice(root.length + 1);
+    }
+    return category;
+  }
+  updateDefaultLabel() {
+    var _a, _b, _c, _d, _e;
+    const targetPath = this.targetSelect.value;
+    if (!targetPath) {
+      this.labelInput.value = "";
+      return;
+    }
+    if (this.targetKind === "playlist") {
+      this.labelInput.value = (_b = (_a = this.plugin.findPlaylistByPath(targetPath)) == null ? void 0 : _a.name) != null ? _b : targetPath;
+      return;
+    }
+    this.labelInput.value = (_e = (_d = (_c = this.plugin.findLibraryFileByPath(targetPath)) == null ? void 0 : _c.basename) != null ? _d : targetPath.split("/").pop()) != null ? _e : targetPath;
+  }
+  renderPlaylistTrackSelection() {
+    if (!this.playlistTrackSection || !this.playlistTrackList) return;
+    const isPlaylist = this.targetKind === "playlist";
+    this.playlistTrackSection.toggleClass("is-hidden", !isPlaylist);
+    if (!isPlaylist) {
+      this.selectedTrackIndices.clear();
+      return;
+    }
+    const playlist = this.plugin.findPlaylistByPath(this.targetSelect.value);
+    this.playlistTrackList.empty();
+    this.selectedTrackIndices.clear();
+    if (!playlist || !playlist.tracks.length) {
+      this.playlistTrackList.createDiv({
+        cls: "ttrpg-sb-playlist-editor-empty",
+        text: "This playlist has no playable tracks."
+      });
+      return;
+    }
+    playlist.tracks.forEach((track, index) => {
+      this.selectedTrackIndices.add(index);
+      const row = this.playlistTrackList.createEl("label", {
+        cls: "ttrpg-sb-note-button-track-checkbox"
+      });
+      const checkbox = row.createEl("input", {
+        type: "checkbox"
+      });
+      checkbox.checked = true;
+      checkbox.setAttr(
+        "aria-label",
+        `Include track ${index + 1}: ${track.basename}`
+      );
+      row.createSpan({
+        text: `${index + 1}. ${track.basename}`,
+        title: track.path
+      });
+      checkbox.onchange = () => {
+        if (checkbox.checked) {
+          this.selectedTrackIndices.add(index);
+        } else {
+          this.selectedTrackIndices.delete(index);
+        }
+      };
+    });
+  }
+  updateImagePathInput() {
+    if (!this.imagePathInput) return;
+    this.imagePathInput.value = this.imagePath;
+    this.imagePathInput.placeholder = "No image selected";
+    this.imagePathInput.title = this.imagePath;
+  }
+  insertButton() {
+    const targetPath = this.targetSelect.value.trim();
+    if (!targetPath) {
+      new import_obsidian12.Notice("Choose a sound or playlist first.");
+      return;
+    }
+    const label = this.labelInput.value.trim();
+    if (!label) {
+      new import_obsidian12.Notice("Enter a button label.");
+      return;
+    }
+    const imageSize = this.parseImageSize();
+    if (imageSize === null) return;
+    let targetWithSelection = targetPath;
+    if (this.targetKind === "playlist") {
+      const playlist = this.plugin.findPlaylistByPath(targetPath);
+      if (!playlist || !playlist.tracks.length) {
+        new import_obsidian12.Notice("The selected playlist has no playable tracks.");
+        return;
+      }
+      const selected = [...this.selectedTrackIndices].sort((a, b) => a - b);
+      if (!selected.length) {
+        new import_obsidian12.Notice("Select at least one playlist track.");
+        return;
+      }
+      const selectionSpec = this.createTrackSelectionSpec(
+        selected,
+        playlist.tracks.length
+      );
+      if (selectionSpec) {
+        targetWithSelection += `#${selectionSpec}`;
+      }
+    }
+    const scheme = this.targetKind === "sound" ? this.exclusiveToggle.checked ? "ttrpg-exclusive-sound" : "ttrpg-sound" : this.exclusiveToggle.checked ? "ttrpg-exclusive-playlist" : "ttrpg-playlist";
+    const title = this.createPresentationTitle(imageSize);
+    const escapedLabel = label.replace(/([\\\]])/g, "\\$1");
+    const markdown = `[${escapedLabel}](${scheme}:${targetWithSelection}${title})`;
+    this.onInsert(markdown);
+    this.close();
+  }
+  parseImageSize() {
+    const raw = this.imageSizeInput.value.trim();
+    if (!raw) return void 0;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 8 || value > 512) {
+      new import_obsidian12.Notice("Image size must be a whole number between 8 and 512.");
+      return null;
+    }
+    if (!this.imagePath) {
+      new import_obsidian12.Notice("Choose an image before setting an individual image size.");
+      return null;
+    }
+    return value;
+  }
+  createPresentationTitle(imageSize) {
+    if (!this.imagePath) return "";
+    const presentation = imageSize ? `${this.imagePath} | ${imageSize}` : this.imagePath;
+    return ` "${presentation.replace(/"/g, '\\"')}"`;
+  }
+  /**
+   * Creates compact note syntax from checkbox selections:
+   * [0, 2, 3, 4, 7] -> "1,3-5,8"
+   *
+   * No fragment is generated for a full selection, because an omitted range
+   * already means "play the complete playlist".
+   */
+  createTrackSelectionSpec(selectedIndices, trackCount) {
+    if (selectedIndices.length === trackCount) {
+      return void 0;
+    }
+    const parts = [];
+    let start = selectedIndices[0];
+    let previous = start;
+    const pushRange = () => {
+      if (start === previous) {
+        parts.push(String(start + 1));
+      } else {
+        parts.push(`${start + 1}-${previous + 1}`);
+      }
+    };
+    for (let index = 1; index < selectedIndices.length; index++) {
+      const current = selectedIndices[index];
+      if (current === previous + 1) {
+        previous = current;
+        continue;
+      }
+      pushRange();
+      start = current;
+      previous = current;
+    }
+    pushRange();
+    return parts.join(",");
   }
 };
 
@@ -3647,7 +5012,7 @@ function unknownToError(err, fallbackMessage = "Unknown error") {
 function hasSetLibrary(v) {
   return !!v && typeof v === "object" && typeof v["setLibrary"] === "function";
 }
-var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
+var TTRPGSoundboardPlugin = class extends import_obsidian13.Plugin {
   constructor() {
     super(...arguments);
     this.soundPrefs = {};
@@ -3658,6 +5023,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     this.playlistStates = /* @__PURE__ */ new Map();
     this.playIdToPlaylist = /* @__PURE__ */ new Map();
     this.controlsActionListeners = /* @__PURE__ */ new Set();
+    this.playbackStopGeneration = 0;
     // Note buttons inside markdown documents
     this.noteButtons = /* @__PURE__ */ new Set();
     // Registry of volume sliders per file path (soundboard view + now playing)
@@ -3701,12 +5067,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         const view = leaf == null ? void 0 : leaf.view;
-        if (view instanceof import_obsidian10.MarkdownView) {
+        if (view instanceof import_obsidian13.MarkdownView) {
           this.lastMarkdownView = view;
         }
       })
     );
-    const current = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const current = this.app.workspace.getActiveViewOfType(import_obsidian13.MarkdownView);
     if (current) this.lastMarkdownView = current;
     this.engineNoteUnsub = this.engine.on((e) => {
       if (e.type === "stop") {
@@ -3742,7 +5108,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       id: "stop-all-sounds",
       name: "Stop all sounds",
       callback: () => {
-        void this.engine.stopAll(this.settings.defaultFadeOutMs);
+        void this.stopAllPlayback();
       }
     });
     this.addCommand({
@@ -3751,7 +5117,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       callback: async () => {
         const files = this.getAllAudioFilesInLibrary();
         await this.engine.preload(files);
-        new import_obsidian10.Notice(`TTRPG Soundboard: preloaded ${files.length} files.`);
+        new import_obsidian13.Notice(`TTRPG Soundboard: preloaded ${files.length} files.`);
       }
     });
     this.addCommand({
@@ -3759,7 +5125,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       name: "Clear decoded audio cache (free RAM)",
       callback: () => {
         this.engine.clearBufferCache();
-        new import_obsidian10.Notice("Cleared decoded audio cache.");
+        new import_obsidian13.Notice("Cleared decoded audio cache.");
       }
     });
     this.addCommand({
@@ -3775,17 +5141,32 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       callback: () => {
         const items = this.buildQuickPlayItems();
         if (!items.length) {
-          new import_obsidian10.Notice("No audio files found in library.");
+          new import_obsidian13.Notice("No audio files found in library.");
           return;
         }
         new QuickPlayModal(this.app, this, items).open();
       }
     });
+    this.addCommand({
+      id: "insert-note-playback-button",
+      name: "Insert sound or playlist button into note",
+      callback: () => {
+        this.openNoteButtonDesigner();
+      }
+    });
+    this.addCommand({
+      id: "edit-json-playlists",
+      name: "Create or edit JSON playlist",
+      callback: () => {
+        this.openJsonPlaylistEditor();
+      }
+    });
     this.registerEvent(this.app.vault.on("create", () => this.rescanDebounced()));
     this.registerEvent(this.app.vault.on("delete", () => this.rescanDebounced()));
+    this.registerEvent(this.app.vault.on("modify", () => this.rescanDebounced()));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian10.TFile) {
+        if (file instanceof import_obsidian13.TFile) {
           const newPath = file.path;
           const sp = this.soundPrefs[oldPath];
           if (sp) {
@@ -3905,11 +5286,29 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
   }
   async prepareBeforeStartingSingle(file, forceExclusive = false) {
+    const stopGeneration = this.playbackStopGeneration;
     if (forceExclusive || this.settings.exclusivePlayback) {
       await this.engine.stopAll(this.settings.defaultFadeOutMs);
     } else if (!this.settings.allowOverlap) {
       await this.engine.stopByFile(file, 0);
     }
+    return this.isPlaybackStartAllowed(stopGeneration);
+  }
+  async stopAllPlayback(fadeOutMs = this.settings.defaultFadeOutMs) {
+    this.playbackStopGeneration++;
+    for (const state of this.playlistStates.values()) {
+      this.beginPlaylistRequest(state);
+      state.handle = void 0;
+      state.active = false;
+      state.currentTrackPath = void 0;
+    }
+    this.playIdToPlaylist.clear();
+    this.updateNoteButtonsPlayingState();
+    this.notifyControlsActionStateChanged();
+    await this.engine.stopAll(fadeOutMs);
+  }
+  isPlaybackStartAllowed(stopGeneration) {
+    return stopGeneration === this.playbackStopGeneration;
   }
   // ===== View activation / library wiring =====
   async activateView() {
@@ -3920,12 +5319,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
    * Opens and reveals only the main soundboard view.
    */
   async activateSoundboardView() {
+    var _a;
     const { workspace } = this.app;
-    let sbLeaf;
     const sbLeaves = workspace.getLeavesOfType(VIEW_TYPE_TTRPG_SOUNDBOARD);
-    if (sbLeaves.length) {
-      sbLeaf = sbLeaves[0];
-    } else {
+    let sbLeaf = (_a = sbLeaves[0]) != null ? _a : null;
+    if (!sbLeaf) {
       sbLeaf = workspace.getRightLeaf(false);
       if (sbLeaf) {
         await sbLeaf.setViewState({
@@ -4014,7 +5412,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       case "playback.pause-all": {
         const state = this.engine.getGlobalPlaybackState();
         if (state === "none") {
-          new import_obsidian10.Notice("No sounds are currently playing.");
+          new import_obsidian13.Notice("No sounds are currently playing.");
         } else if (state === "paused") {
           await this.engine.resumeAll(this.settings.defaultFadeInMs);
         } else {
@@ -4076,7 +5474,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         "TTRPG Soundboard: failed to reload audio library:",
         error
       );
-      new import_obsidian10.Notice(
+      new import_obsidian13.Notice(
         `TTRPG Soundboard: Could not load sound library. ${error.message}`
       );
     }
@@ -4176,6 +5574,140 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
   findLibraryFileByPath(path) {
     var _a;
     return (_a = this.getAllAudioFilesInLibrary().find((file) => file.path === path)) != null ? _a : null;
+  }
+  /**
+   * Public read-only list used by the JSON playlist editor.
+   */
+  getAllAudioFiles() {
+    return this.getAllAudioFilesInLibrary();
+  }
+  /**
+   * JSON playlists store paths relative to the configured library root.
+   * External libraries already use relative paths, while vault files need
+   * their configured root-folder prefix removed.
+   */
+  getJsonPlaylistTrackPath(file) {
+    if (isExternalAudioFile(file)) {
+      return file.path;
+    }
+    const root = this.library.rootFolder;
+    if (!root) {
+      throw new Error(
+        "JSON playlists require a configured root folder for vault libraries."
+      );
+    }
+    if (!file.path.startsWith(`${root}/`)) {
+      throw new Error(
+        `Audio file is outside the configured sound-library root: ${file.path}`
+      );
+    }
+    return file.path.slice(root.length + 1);
+  }
+  resolveJsonPlaylistTrackPath(path) {
+    const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!normalized) return null;
+    const directMatch = this.findLibraryFileByPath(normalized);
+    if (directMatch) return directMatch;
+    const root = this.library.rootFolder;
+    if (!root) return null;
+    return this.findLibraryFileByPath(`${root}/${normalized}`);
+  }
+  openJsonPlaylistEditor(existingPlaylistPath) {
+    new JsonPlaylistEditorModal(
+      this.app,
+      this,
+      existingPlaylistPath
+    ).open();
+  }
+  async loadJsonPlaylistDocument(playlistPath) {
+    const playlist = this.findPlaylistByPath(playlistPath);
+    if (!playlist || playlist.kind !== "json" || !playlist.definitionFile) {
+      throw new Error(`JSON playlist not found: ${playlistPath}`);
+    }
+    const source = playlist.definitionFile;
+    const text = isExternalAudioFile(source) ? await readExternalFileText(source.absolutePath) : await this.app.vault.read(source);
+    return parseJsonPlaylistDocument(text, playlist.path);
+  }
+  async saveJsonPlaylist(options) {
+    const parentFolder = options.parentFolder.trim();
+    const name = options.name.trim();
+    if (!parentFolder) {
+      throw new Error("Choose a target category for the playlist.");
+    }
+    if (!name) {
+      throw new Error("Enter a playlist name.");
+    }
+    if (!options.tracks.length) {
+      throw new Error("Add at least one track to the playlist.");
+    }
+    const validParent = this.library.topFolders.includes(parentFolder);
+    if (!validParent) {
+      throw new Error("The selected target category no longer exists.");
+    }
+    const document = createJsonPlaylistDocument(
+      name,
+      options.tracks,
+      options.coverPath
+    );
+    const serialized = stringifyJsonPlaylistDocument(document);
+    const fileName = toJsonPlaylistFileName(name);
+    const existing = options.existingPlaylistPath ? this.findPlaylistByPath(options.existingPlaylistPath) : null;
+    if (existing && existing.kind !== "json") {
+      throw new Error("Only JSON playlists can be edited in this editor.");
+    }
+    if (this.settings.soundLibraryLocation === "external") {
+      const root = resolveExternalPath(this.settings.externalSoundFolderPath);
+      const targetAbsolutePath = resolveExternalChildPath(
+        root,
+        parentFolder,
+        fileName
+      );
+      const oldAbsolutePath = (existing == null ? void 0 : existing.definitionFile) && isExternalAudioFile(existing.definitionFile) ? existing.definitionFile.absolutePath : void 0;
+      if (targetAbsolutePath !== oldAbsolutePath && externalPathExists(targetAbsolutePath)) {
+        throw new Error(
+          `A file named "${fileName}" already exists in this category.`
+        );
+      }
+      await writeExternalFileText(targetAbsolutePath, serialized);
+      if (oldAbsolutePath && oldAbsolutePath !== targetAbsolutePath) {
+        await deleteExternalFile(oldAbsolutePath);
+      }
+      await this.rescan();
+      return `${parentFolder}/${fileName}`;
+    }
+    const targetPath = `${parentFolder}/${fileName}`;
+    const oldPath = (existing == null ? void 0 : existing.definitionFile) && !isExternalAudioFile(existing.definitionFile) ? existing.definitionFile.path : void 0;
+    const targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+    if (targetPath !== oldPath && targetFile instanceof import_obsidian13.TFile) {
+      throw new Error(
+        `A file named "${fileName}" already exists in this category.`
+      );
+    }
+    if (targetPath === oldPath && targetFile instanceof import_obsidian13.TFile) {
+      await this.app.vault.modify(targetFile, serialized);
+    } else {
+      await this.app.vault.create(targetPath, serialized);
+    }
+    if (oldPath && oldPath !== targetPath) {
+      const oldFile = this.app.vault.getAbstractFileByPath(oldPath);
+      if (oldFile instanceof import_obsidian13.TFile) {
+        await this.app.fileManager.trashFile(oldFile);
+      }
+    }
+    await this.rescan();
+    return targetPath;
+  }
+  async deleteJsonPlaylist(playlistPath) {
+    const playlist = this.findPlaylistByPath(playlistPath);
+    if (!playlist || playlist.kind !== "json" || !playlist.definitionFile) {
+      throw new Error(`JSON playlist not found: ${playlistPath}`);
+    }
+    if (isExternalAudioFile(playlist.definitionFile)) {
+      await deleteExternalFile(playlist.definitionFile.absolutePath);
+    } else {
+      await this.app.fileManager.trashFile(playlist.definitionFile);
+    }
+    await this.rescan();
   }
   // ===== Ambience + volume helpers =====
   isAmbiencePath(path) {
@@ -4375,7 +5907,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       try {
         const audio = new Audio();
         audio.preload = "metadata";
-        audio.src = this.app.vault.getResourcePath(file);
+        audio.src = getLibraryFileResourcePath(this.app, file);
         const cleanup = () => {
           audio.onloadedmetadata = null;
           audio.onerror = null;
@@ -4446,7 +5978,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     const fadeInMs = pref.fadeInMs != null ? pref.fadeInMs : this.settings.defaultFadeInMs;
     const loopEndTrimSeconds = this.getLoopEndTrimSecondsForPath(path);
     const loopDelaySeconds = this.getLoopDelaySecondsForPath(path);
-    await this.prepareBeforeStartingSingle(file);
+    if (!await this.prepareBeforeStartingSingle(file)) {
+      return;
+    }
     await this.engine.play(file, {
       volume: effective,
       loop: this.getEffectiveLoopForPath(path),
@@ -4471,32 +6005,45 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     const trackCount = pl.tracks.length;
     if (trackCount === 0) return;
     const st = this.ensurePlaylistState(pl);
+    const requestToken = this.beginPlaylistRequest(st);
+    const stopGeneration = this.playbackStopGeneration;
     const indices = this.normalizeSelectionIndices(selectionIndices, trackCount);
     if (!indices.length) return;
     const pref = this.getPlaylistPref(pl.path);
     const fadeOutMs = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
-    st.indices = pref.shuffle ? this.shuffleArray(indices) : indices;
-    st.position = 0;
+    st.indices = pref.randomSingleTrackLoop ? indices : pref.shuffle ? this.shuffleArray(indices) : indices;
+    st.position = pref.randomSingleTrackLoop ? this.getRandomPlaylistPosition(st) : 0;
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch (e) {
       }
-      st.handle = void 0;
+    }
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
     }
     if (forceExclusive) {
       await this.engine.stopAll(fadeOutMs);
     }
-    await this.playPlaylistIndex(pl, st, 0);
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
+    }
+    await this.playPlaylistIndex(
+      pl,
+      st,
+      st.position,
+      requestToken,
+      stopGeneration
+    );
   }
   async stopPlaylist(playlistPath) {
     var _a;
     const st = this.playlistStates.get(playlistPath);
-    if (!st || !st.handle) {
-      if (st) {
-        st.active = false;
-        st.currentTrackPath = void 0;
-      }
+    if (!st) return;
+    this.beginPlaylistRequest(st);
+    if (!st.handle) {
+      st.active = false;
+      st.currentTrackPath = void 0;
       return;
     }
     const pref = this.getPlaylistPref(playlistPath);
@@ -4510,13 +6057,40 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     st.currentTrackPath = void 0;
   }
   async nextInPlaylist(pl) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const trackCount = pl.tracks.length;
     if (!trackCount) return;
     const st = this.ensurePlaylistState(pl);
+    const requestToken = this.beginPlaylistRequest(st);
+    const stopGeneration = this.playbackStopGeneration;
     const pref = this.getPlaylistPref(pl.path);
+    if (pref.randomSingleTrackLoop) {
+      if (!st.indices.length) {
+        st.indices = this.buildFullTrackIndexList(trackCount);
+        st.position = 0;
+      }
+      const nextPos2 = this.getRandomPlaylistPosition(st, st.position);
+      const fadeOutMs2 = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+      if (st.handle) {
+        try {
+          await st.handle.stop({ fadeOutMs: fadeOutMs2 });
+        } catch (e) {
+        }
+      }
+      if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+        return;
+      }
+      await this.playPlaylistIndex(
+        pl,
+        st,
+        nextPos2,
+        requestToken,
+        stopGeneration
+      );
+      return;
+    }
     if (st.indices.length === 1 && trackCount > 1) {
-      const cur = (_b = (_a = st.indices[st.position]) != null ? _a : st.indices[0]) != null ? _b : 0;
+      const cur = (_c = (_b = st.indices[st.position]) != null ? _b : st.indices[0]) != null ? _c : 0;
       const full = this.buildFullTrackIndexList(trackCount);
       if (pref.shuffle) {
         const rest = full.filter((i) => i !== cur);
@@ -4532,25 +6106,60 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       if (pref.shuffle) st.indices = this.shuffleArray(st.indices);
       st.position = 0;
     }
-    const fadeOutMs = (_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs;
+    const fadeOutMs = (_d = pref.fadeOutMs) != null ? _d : this.settings.defaultFadeOutMs;
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch (e) {
       }
-      st.handle = void 0;
+    }
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
     }
     const nextPos = (st.position + 1) % st.indices.length;
-    await this.playPlaylistIndex(pl, st, nextPos);
+    await this.playPlaylistIndex(
+      pl,
+      st,
+      nextPos,
+      requestToken,
+      stopGeneration
+    );
   }
   async prevInPlaylist(pl) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const trackCount = pl.tracks.length;
     if (!trackCount) return;
     const st = this.ensurePlaylistState(pl);
+    const requestToken = this.beginPlaylistRequest(st);
+    const stopGeneration = this.playbackStopGeneration;
     const pref = this.getPlaylistPref(pl.path);
+    if (pref.randomSingleTrackLoop) {
+      if (!st.indices.length) {
+        st.indices = this.buildFullTrackIndexList(trackCount);
+        st.position = 0;
+      }
+      const prevPos2 = this.getRandomPlaylistPosition(st, st.position);
+      const fadeOutMs2 = (_a = pref.fadeOutMs) != null ? _a : this.settings.defaultFadeOutMs;
+      if (st.handle) {
+        try {
+          await st.handle.stop({ fadeOutMs: fadeOutMs2 });
+        } catch (e) {
+        }
+      }
+      if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+        return;
+      }
+      await this.playPlaylistIndex(
+        pl,
+        st,
+        prevPos2,
+        requestToken,
+        stopGeneration
+      );
+      return;
+    }
     if (st.indices.length === 1 && trackCount > 1) {
-      const cur = (_b = (_a = st.indices[st.position]) != null ? _a : st.indices[0]) != null ? _b : 0;
+      const cur = (_c = (_b = st.indices[st.position]) != null ? _b : st.indices[0]) != null ? _c : 0;
       const full = this.buildFullTrackIndexList(trackCount);
       if (pref.shuffle) {
         const rest = full.filter((i) => i !== cur);
@@ -4566,16 +6175,24 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       if (pref.shuffle) st.indices = this.shuffleArray(st.indices);
       st.position = 0;
     }
-    const fadeOutMs = (_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs;
+    const fadeOutMs = (_d = pref.fadeOutMs) != null ? _d : this.settings.defaultFadeOutMs;
     if (st.handle) {
       try {
         await st.handle.stop({ fadeOutMs });
       } catch (e) {
       }
-      st.handle = void 0;
+    }
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
     }
     const prevPos = (st.position - 1 + st.indices.length) % st.indices.length;
-    await this.playPlaylistIndex(pl, st, prevPos);
+    await this.playPlaylistIndex(
+      pl,
+      st,
+      prevPos,
+      requestToken,
+      stopGeneration
+    );
   }
   ensurePlaylistState(pl) {
     let st = this.playlistStates.get(pl.path);
@@ -4584,6 +6201,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         path: pl.path,
         indices: [],
         position: 0,
+        requestToken: 0,
         active: false
       };
       this.playlistStates.set(pl.path, st);
@@ -4634,8 +6252,18 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     }
     return a;
   }
-  async playPlaylistIndex(pl, st, position) {
+  getRandomPlaylistPosition(st, avoidPosition) {
+    if (st.indices.length <= 1) return 0;
+    const positions = st.indices.map((_trackIndex, position) => position);
+    const candidates = avoidPosition != null ? positions.filter((position) => position !== avoidPosition) : positions;
+    const pool = candidates.length > 0 ? candidates : positions;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  async playPlaylistIndex(pl, st, position, requestToken, stopGeneration) {
     var _a, _b, _c;
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
+    }
     const trackCount = pl.tracks.length;
     if (!trackCount) {
       st.active = false;
@@ -4660,7 +6288,13 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         st.currentTrackPath = void 0;
         return;
       }
-      await this.playPlaylistIndex(pl, st, 0);
+      await this.playPlaylistIndex(
+        pl,
+        st,
+        0,
+        requestToken,
+        stopGeneration
+      );
       return;
     }
     const file = pl.tracks[trackIdx];
@@ -4668,8 +6302,12 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     const rawVol = (_a = pref.volume) != null ? _a : 1;
     const effectiveVol = rawVol * (this.isAmbiencePath(file.path) ? this.settings.ambienceVolume : 1);
     const fadeInMs = (_b = pref.fadeInMs) != null ? _b : this.settings.defaultFadeInMs;
+    const loopSingleTrack = !!pref.randomSingleTrackLoop;
     if (this.settings.exclusivePlayback) {
       await this.engine.stopAll((_c = pref.fadeOutMs) != null ? _c : this.settings.defaultFadeOutMs);
+    }
+    if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+      return;
     }
     st.position = position;
     st.active = true;
@@ -4677,12 +6315,25 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     try {
       const handle = await this.engine.play(file, {
         volume: effectiveVol,
-        loop: false,
+        loop: loopSingleTrack,
         fadeInMs
       });
+      if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+        await (handle == null ? void 0 : handle.stop({ fadeOutMs: 0 }));
+        return;
+      }
+      if (!handle) {
+        st.active = false;
+        st.handle = void 0;
+        st.currentTrackPath = void 0;
+        return;
+      }
       st.handle = handle;
       this.playIdToPlaylist.set(handle.id, pl.path);
     } catch (err) {
+      if (!this.isPlaylistRequestCurrent(st, requestToken) || !this.isPlaybackStartAllowed(stopGeneration)) {
+        return;
+      }
       console.error("TTRPG Soundboard: failed to play playlist track", pl.path, err);
       st.active = false;
       st.handle = void 0;
@@ -4694,6 +6345,8 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     if (!pl) return;
     const st = this.playlistStates.get(playlistPath);
     if (!st || !st.active) return;
+    const requestToken = this.beginPlaylistRequest(st);
+    const stopGeneration = this.playbackStopGeneration;
     const trackCount = pl.tracks.length;
     if (!trackCount) {
       st.active = false;
@@ -4706,6 +6359,17 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       st.position = 0;
     }
     const pref = this.getPlaylistPref(playlistPath);
+    if (pref.randomSingleTrackLoop) {
+      const nextPos = this.getRandomPlaylistPosition(st, st.position);
+      await this.playPlaylistIndex(
+        pl,
+        st,
+        nextPos,
+        requestToken,
+        stopGeneration
+      );
+      return;
+    }
     const lastPos = st.indices.length - 1;
     const atLast = st.position >= lastPos;
     if (atLast) {
@@ -4713,15 +6377,34 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         if (pref.shuffle) {
           st.indices = this.shuffleArray(st.indices);
         }
-        await this.playPlaylistIndex(pl, st, 0);
+        await this.playPlaylistIndex(
+          pl,
+          st,
+          0,
+          requestToken,
+          stopGeneration
+        );
       } else {
         st.handle = void 0;
         st.active = false;
         st.currentTrackPath = void 0;
       }
     } else {
-      await this.playPlaylistIndex(pl, st, st.position + 1);
+      await this.playPlaylistIndex(
+        pl,
+        st,
+        st.position + 1,
+        requestToken,
+        stopGeneration
+      );
     }
+  }
+  beginPlaylistRequest(st) {
+    st.requestToken++;
+    return st.requestToken;
+  }
+  isPlaylistRequestCurrent(st, requestToken) {
+    return st.requestToken === requestToken;
   }
   findPlaylistByPath(playlistPath) {
     if (!this.library) return null;
@@ -4738,47 +6421,109 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     if (!rangeSpec || !rangeSpec.trim()) {
       return this.buildFullTrackIndexList(trackCount);
     }
-    const spec = rangeSpec.trim();
-    const rangeMatch = spec.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (rangeMatch) {
-      const start1 = parseInt(rangeMatch[1], 10);
-      const end1 = parseInt(rangeMatch[2], 10);
-      if (Number.isNaN(start1) || Number.isNaN(end1)) {
+    const indices = [];
+    const seen = /* @__PURE__ */ new Set();
+    const parts = rangeSpec.split(",").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) return [];
+    for (const part of parts) {
+      const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (rangeMatch) {
+        const start1 = parseInt(rangeMatch[1], 10);
+        const end1 = parseInt(rangeMatch[2], 10);
+        if (Number.isNaN(start1) || Number.isNaN(end1)) return [];
+        const start = Math.min(start1, end1);
+        const end = Math.max(start1, end1);
+        for (let i = start; i <= end; i++) {
+          const zero2 = i - 1;
+          if (zero2 >= 0 && zero2 < trackCount && !seen.has(zero2)) {
+            seen.add(zero2);
+            indices.push(zero2);
+          }
+        }
+        continue;
+      }
+      const singleMatch = part.match(/^(\d+)$/);
+      if (!singleMatch) return [];
+      const number = parseInt(singleMatch[1], 10);
+      const zero = number - 1;
+      if (Number.isNaN(number) || zero < 0 || zero >= trackCount) {
         return [];
       }
-      const start = Math.min(start1, end1);
-      const end = Math.max(start1, end1);
-      const indices = [];
-      for (let i = start; i <= end; i++) {
-        const zero = i - 1;
-        if (zero >= 0 && zero < trackCount) {
-          indices.push(zero);
-        }
+      if (!seen.has(zero)) {
+        seen.add(zero);
+        indices.push(zero);
       }
-      return indices;
     }
-    const singleMatch = spec.match(/^(\d+)$/);
-    if (singleMatch) {
-      const n = parseInt(singleMatch[1], 10);
-      if (Number.isNaN(n)) return [];
-      const zero = n - 1;
-      if (zero < 0 || zero >= trackCount) return [];
-      return [zero];
-    }
-    return [];
+    return indices;
   }
   async handlePlaylistButtonClick(playlistPath, rangeSpec, forceExclusive = false) {
     const pl = this.findPlaylistByPath(playlistPath);
     if (!pl) {
-      new import_obsidian10.Notice(`TTRPG Soundboard: playlist not found: ${playlistPath}`);
+      new import_obsidian13.Notice(`TTRPG Soundboard: playlist not found: ${playlistPath}`);
       return;
     }
     const indices = this.parsePlaylistRangeSpec(rangeSpec, pl.tracks.length);
     if (!indices.length) {
-      new import_obsidian10.Notice("Playlist range does not match any tracks.");
+      new import_obsidian13.Notice("Playlist range does not match any tracks.");
       return;
     }
     await this.startPlaylist(pl, indices, forceExclusive);
+  }
+  // ===== Note-button designer =====
+  openNoteButtonDesigner() {
+    var _a;
+    const markdownView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian13.MarkdownView);
+    if (!(markdownView == null ? void 0 : markdownView.editor)) {
+      new import_obsidian13.Notice("Open a note in editing mode before inserting a soundboard button.");
+      return;
+    }
+    const editor = markdownView.editor;
+    new NoteButtonDesignerModal(this.app, this, (markdown) => {
+      editor.replaceSelection(markdown);
+    }).open();
+  }
+  parseNoteButtonPresentation(title) {
+    var _a;
+    const raw = (_a = title == null ? void 0 : title.trim()) != null ? _a : "";
+    if (!raw) return {};
+    const separator = " | ";
+    const separatorIndex = raw.lastIndexOf(separator);
+    if (separatorIndex < 0) {
+      return { imagePath: raw };
+    }
+    const imagePath = raw.slice(0, separatorIndex).trim();
+    const rawSize = raw.slice(separatorIndex + separator.length).trim().replace(/px$/i, "");
+    const imageSizePx = Number(rawSize);
+    if (!imagePath || !Number.isFinite(imageSizePx) || imageSizePx < 8 || imageSizePx > 512) {
+      return { imagePath: raw };
+    }
+    return {
+      imagePath,
+      imageSizePx
+    };
+  }
+  applyNoteButtonPresentation(button, label, title) {
+    const presentation = this.parseNoteButtonPresentation(title);
+    if (presentation.imagePath) {
+      const imageFile = this.app.vault.getAbstractFileByPath(
+        presentation.imagePath
+      );
+      if (imageFile instanceof import_obsidian13.TFile) {
+        const image = button.createEl("img");
+        image.src = this.app.vault.getResourcePath(imageFile);
+        image.alt = label;
+        button.title = label;
+        button.classList.add("ttrpg-sb-note-thumb");
+        if (presentation.imageSizePx != null) {
+          button.style.setProperty(
+            "--ttrpg-note-icon-size",
+            `${presentation.imageSizePx}px`
+          );
+        }
+        return;
+      }
+    }
+    button.textContent = label;
   }
   // ===== Note buttons inside markdown =====
   /**
@@ -4791,7 +6536,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
    * into clickable buttons that trigger playback.
    */
   processNoteButtons(root) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f;
     const doc = (_a = root.doc) != null ? _a : window.activeDocument;
     const anchors = root.querySelectorAll(
       'a[href^="ttrpg-sound:"], a[href^="ttrpg-exclusive-sound:"], a[href^="ttrpg-playlist:"], a[href^="ttrpg-exclusive-playlist:"]'
@@ -4811,21 +6556,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         if (isExclusiveSound) {
           button.dataset.exclusive = "true";
         }
-        const thumbPath = (_d = a.getAttribute("title")) == null ? void 0 : _d.trim();
-        if (thumbPath) {
-          const af = this.app.vault.getAbstractFileByPath(thumbPath);
-          if (af instanceof import_obsidian10.TFile) {
-            const img = button.createEl("img");
-            img.src = this.app.vault.getResourcePath(af);
-            img.alt = label;
-            button.title = label;
-            button.classList.add("ttrpg-sb-note-thumb");
-          } else {
-            button.textContent = label;
-          }
-        } else {
-          button.textContent = label;
-        }
+        this.applyNoteButtonPresentation(
+          button,
+          label,
+          a.getAttribute("title")
+        );
         button.onclick = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -4849,7 +6584,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
         if (rangeSpec) {
           button.dataset.playlistRange = rangeSpec.trim();
         }
-        button.textContent = label || playlistPath;
+        this.applyNoteButtonPresentation(
+          button,
+          label || playlistPath,
+          a.getAttribute("title")
+        );
         button.onclick = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -4864,7 +6603,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
       }
     }
     const pattern = /\[([^\]]+)\]\((ttrpg-sound|ttrpg-exclusive-sound|ttrpg-playlist|ttrpg-exclusive-playlist):([^")]+)(?:\s+"([^"]+)")?\)/g;
-    const nodeFilter = (_f = (_e = doc.defaultView) == null ? void 0 : _e.NodeFilter) != null ? _f : NodeFilter;
+    const nodeFilter = (_e = (_d = doc.defaultView) == null ? void 0 : _d.NodeFilter) != null ? _e : NodeFilter;
     const walker = doc.createTreeWalker(root, nodeFilter.SHOW_TEXT);
     const textNodes = [];
     let node;
@@ -4880,7 +6619,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     for (const textNode of textNodes) {
       const parent = textNode.parentElement;
       if (!parent) continue;
-      const original = (_g = textNode.nodeValue) != null ? _g : "";
+      const original = (_f = textNode.nodeValue) != null ? _f : "";
       let lastIndex = 0;
       pattern.lastIndex = 0;
       let match;
@@ -4900,21 +6639,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
           if (isExclusiveSound) {
             button.dataset.exclusive = "true";
           }
-          const thumbPath = thumbPathRaw == null ? void 0 : thumbPathRaw.trim();
-          if (thumbPath) {
-            const af = this.app.vault.getAbstractFileByPath(thumbPath);
-            if (af instanceof import_obsidian10.TFile) {
-              const img = button.createEl("img");
-              img.src = this.app.vault.getResourcePath(af);
-              img.alt = label;
-              button.title = label;
-              button.classList.add("ttrpg-sb-note-thumb");
-            } else {
-              button.textContent = label;
-            }
-          } else {
-            button.textContent = label;
-          }
+          this.applyNoteButtonPresentation(
+            button,
+            label,
+            thumbPathRaw
+          );
           button.onclick = (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -4935,7 +6664,11 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
           if (rangeSpec) {
             button.dataset.playlistRange = rangeSpec.trim();
           }
-          button.textContent = label || playlistPath;
+          this.applyNoteButtonPresentation(
+            button,
+            label || playlistPath,
+            thumbPathRaw
+          );
           button.onclick = (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -4966,7 +6699,7 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     var _a, _b, _c;
     const file = this.findLibraryFileByPath(path);
     if (!file) {
-      new import_obsidian10.Notice(`TTRPG Soundboard: file not found: ${path}`);
+      new import_obsidian13.Notice(`TTRPG Soundboard: file not found: ${path}`);
       return;
     }
     const pref = this.getSoundPref(path);
@@ -4979,7 +6712,9 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
     if (playing.has(path)) {
       await this.engine.stopByFile(file, (_b = pref.fadeOutMs) != null ? _b : this.settings.defaultFadeOutMs);
     } else {
-      await this.prepareBeforeStartingSingle(file, forceExclusive);
+      if (!await this.prepareBeforeStartingSingle(file, forceExclusive)) {
+        return;
+      }
       await this.engine.play(file, {
         volume: effective,
         loop: this.getEffectiveLoopForPath(path),
@@ -5012,14 +6747,14 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
   // ===== Insert buttons into active note (from settings modals) =====
   insertSoundButtonIntoActiveNote(filePath, exclusive = false) {
     var _a, _b, _c;
-    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian13.MarkdownView);
     if (!mdView) {
-      new import_obsidian10.Notice("No active editor to insert button.");
+      new import_obsidian13.Notice("No active editor to insert button.");
       return;
     }
     const editor = mdView.editor;
     if (!editor) {
-      new import_obsidian10.Notice("No editor found for the current view.");
+      new import_obsidian13.Notice("No editor found for the current view.");
       return;
     }
     const file = this.findLibraryFileByPath(filePath);
@@ -5030,24 +6765,24 @@ var TTRPGSoundboardPlugin = class extends import_obsidian10.Plugin {
   }
   insertPlaylistButtonIntoActiveNote(playlistPath, exclusive = false) {
     var _a;
-    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const mdView = (_a = this.lastMarkdownView) != null ? _a : this.app.workspace.getActiveViewOfType(import_obsidian13.MarkdownView);
     if (!mdView) {
-      new import_obsidian10.Notice("No active editor to insert button.");
+      new import_obsidian13.Notice("No active editor to insert button.");
       return;
     }
     const editor = mdView.editor;
     if (!editor) {
-      new import_obsidian10.Notice("No editor found for the current view.");
+      new import_obsidian13.Notice("No editor found for the current view.");
       return;
     }
     const pl = this.findPlaylistByPath(playlistPath);
     if (!pl) {
-      new import_obsidian10.Notice(`TTRPG Soundboard: playlist not found: ${playlistPath}`);
+      new import_obsidian13.Notice(`TTRPG Soundboard: playlist not found: ${playlistPath}`);
       return;
     }
     const count = pl.tracks.length;
     if (!count) {
-      new import_obsidian10.Notice("Playlist has no tracks.");
+      new import_obsidian13.Notice("Playlist has no tracks.");
       return;
     }
     const label = pl.name;

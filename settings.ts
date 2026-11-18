@@ -10,6 +10,11 @@ import {
 import type TTRPGSoundboardPlugin from "./main";
 import { StyleSettingsModal } from "./ui/StyleSettingsModal";
 
+type DistributiveOmit<T, K extends PropertyKey> =
+  T extends unknown ? Omit<T, K> : never;
+
+type SettingControlWithoutKey = DistributiveOmit<SettingControl, "key">;
+
 export interface StyleCategorySettings {
   cardBg: string;
   cardBorder: string;
@@ -512,7 +517,9 @@ export class SoundboardSettingTab extends PluginSettingTab {
     }
 
     const requiresRescan = new Set([
-      "rootFolder",
+      "soundLibraryLocation",
+      "externalSoundFolderPath",			
+			"rootFolder",
       "includeRootFiles",
       "folders",
       "extensions",
@@ -556,7 +563,7 @@ export class SoundboardSettingTab extends PluginSettingTab {
   private control(
     name: string,
     key: keyof SoundboardSettings,
-    control: Omit<SettingControl, "key">,
+    control: SettingControlWithoutKey,
     desc?: string,
   ): SettingDefinition {
     return {

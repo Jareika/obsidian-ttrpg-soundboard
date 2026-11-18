@@ -1,0 +1,22 @@
+## 1.4.0 (Unreleased yet)
+
+- Prevented sounds from starting after they were stopped while still loading or decoding.
+- Prevented stale playlist starts after rapid Stop, Next, Previous, or restart actions.
+- Preserved muted per-sound volume when resuming playback.
+- Avoided duplicate simultaneous decoding of the same audio file.
+- Stop All now cancels sound and playlist starts that are waiting for a fade-out.
+- Prevented playlists from resuming or starting a new track after Stop All was pressed during a playlist restart, track skip, or exclusive playback transition.
+- Playlists can now use **Random track loop** mode: one randomly selected track loops continuously, while Next/Previous select another random track.
+- Random-track playlist mode supports playlist buttons in notes and respects their optional `#N` / `#A-B` track selection.
+- Added JSON-based virtual playlists using `*.playlist.json` files.
+- Added a JSON playlist editor for creating, loading, changing, moving and deleting virtual playlists.
+- JSON playlists can reference existing audio files from any top-level sound category without copying those files into additional playlist folders.
+- Added expandable recursive source-folder browsing in the playlist editor.
+- Added add, preview, stop, remove and reorder controls for playlist tracks.
+- Preserved editor context while changing tracks: only the affected track pane is updated, while the source tree and its scroll/expanded state remain intact.
+- Added support for JSON playlists in both vault and external sound libraries.
+- Added the **Insert sound or playlist button into note** command.
+- Added a visual note-button designer for selecting sounds or playlists from a category, setting a label and enabling exclusive playback.
+- Playlist note buttons can now select arbitrary individual tracks, stored as comma-separated selections such as `#1,3,5-7`.
+- Added optional vault images for playlist note buttons.
+- Note-button images can now use an optional individual image size, for example `"Soundbar/Thumbnails/rain.png | 64"`.

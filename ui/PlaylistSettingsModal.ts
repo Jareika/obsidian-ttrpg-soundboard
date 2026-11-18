@@ -24,7 +24,8 @@ export class PlaylistSettingsModal extends Modal {
     const originalVol = vol; // for restoring on Cancel
     let loop = !!pref.loop;
     let shuffle = !!pref.shuffle;
-	let insertExclusiveButton = false;
+		let randomSingleTrackLoop = !!pref.randomSingleTrackLoop;
+	  let insertExclusiveButton = false;
 
     new Setting(contentEl)
       .setName("Fade in (ms)")
@@ -78,6 +79,17 @@ export class PlaylistSettingsModal extends Modal {
           shuffle = v;
         }),
       );
+			
+    new Setting(contentEl)
+      .setName("Random track loop")
+      .setDesc(
+        "Choose one random track when the playlist starts and loop only that track continuously. Next and previous choose another random track. For note buttons, a range such as #1-4 limits the random selection to those tracks.",
+      )
+      .addToggle((tg) =>
+        tg.setValue(randomSingleTrackLoop).onChange((v) => {
+          randomSingleTrackLoop = v;
+        }),
+      );
 
     new Setting(contentEl)
       .setName("Insert playlist button")
@@ -111,6 +123,7 @@ export class PlaylistSettingsModal extends Modal {
           delete pref.volume;
           delete pref.loop;
           delete pref.shuffle;
+					delete pref.randomSingleTrackLoop;
 
           this.plugin.setPlaylistPref(this.folderPath, pref);
           await this.plugin.saveSettings();
@@ -137,6 +150,12 @@ export class PlaylistSettingsModal extends Modal {
 
           if (shuffle) pref.shuffle = true;
           else delete pref.shuffle;
+					
+          if (randomSingleTrackLoop) {
+            pref.randomSingleTrackLoop = true;
+          } else {
+            delete pref.randomSingleTrackLoop;
+          }
 
           this.plugin.setPlaylistPref(this.folderPath, pref);
           await this.plugin.saveSettings();

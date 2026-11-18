@@ -292,6 +292,191 @@
   border-color: var(--interactive-accent);
 }
 
+/* ===== JSON playlist editor ===== */
+
+.ttrpg-sb-playlist-editor {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.modal.ttrpg-sb-playlist-editor-modal {
+  width: min(960px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+}
+
+.ttrpg-sb-playlist-editor-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 16px;
+}
+
+.ttrpg-sb-playlist-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ttrpg-sb-playlist-editor-field input,
+.ttrpg-sb-playlist-editor-field select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.ttrpg-sb-playlist-editor-field select.dropdown {
+  display: block;
+  min-height: 32px;
+  color: var(--text-normal);
+  background-color: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--input-radius, 4px);
+}
+
+.ttrpg-sb-playlist-editor-field > span {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.ttrpg-sb-playlist-editor-cover-field {
+  grid-column: 1 / -1;
+}
+
+.ttrpg-sb-playlist-editor-cover-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ttrpg-sb-playlist-editor-cover-controls input {
+  flex: 1 1 auto;
+}
+
+.ttrpg-sb-playlist-editor-cover-controls button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.ttrpg-sb-playlist-editor-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.ttrpg-sb-playlist-editor-column {
+  min-width: 0;
+}
+
+.ttrpg-sb-playlist-editor-column h3 {
+  margin: 0 0 6px;
+  font-size: 0.95em;
+}
+
+.ttrpg-sb-playlist-editor-list {
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 4px;
+  background: var(--background-primary);
+}
+
+.ttrpg-sb-playlist-editor-folder {
+  padding: 2px 0;
+}
+
+.ttrpg-sb-playlist-editor-folder > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ttrpg-sb-playlist-editor-folder-children {
+  margin-left: 12px;
+}
+
+.ttrpg-sb-playlist-editor-track-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 0;
+}
+
+.ttrpg-sb-playlist-editor-track-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ttrpg-sb-playlist-editor-track-index {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ttrpg-sb-playlist-editor-track-name.is-missing {
+  color: var(--text-error);
+  font-style: italic;
+}
+
+.ttrpg-sb-playlist-editor-empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ttrpg-sb-playlist-editor-selected-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ttrpg-sb-playlist-editor-selected-heading span {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.ttrpg-sb-playlist-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 700px) {
+  .ttrpg-sb-playlist-editor {
+    min-width: 0;
+  }
+
+  .ttrpg-sb-playlist-editor-meta,
+  .ttrpg-sb-playlist-editor-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .ttrpg-sb-playlist-editor-list {
+    max-height: 32vh;
+  }
+
+  .ttrpg-sb-playlist-editor-cover-controls {
+    flex-wrap: wrap;
+  }
+
+  .ttrpg-sb-playlist-editor-cover-controls input {
+    flex-basis: 100%;
+  }
+	
+  .ttrpg-sb-note-button-designer-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ===== Now-playing view ===== */
 
 .ttrpg-sb-now-grid {
@@ -353,6 +538,81 @@ body.is-tablet .ttrpg-sb-now-controls .ttrpg-sb-inline-volume {
   flex: 1 0 100%;
   width: 100%;
   min-width: 0;
+}
+
+/* ===== Note-button designer ===== */
+
+.ttrpg-sb-note-button-designer-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.ttrpg-sb-note-button-designer-fields
+  > .ttrpg-sb-playlist-editor-field {
+  min-width: 0;
+}
+
+.ttrpg-sb-note-button-designer-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.ttrpg-sb-note-button-designer-checkbox input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  max-height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--interactive-accent);
+}
+
+.ttrpg-sb-note-button-designer-checkbox span {
+  min-width: 0;
+}
+
+.ttrpg-sb-playlist-editor-field
+  .ttrpg-sb-note-button-designer-checkbox-input[type="checkbox"] {
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+}
+
+.ttrpg-sb-note-button-designer-image-size {
+  grid-column: 1 / -1;
+}
+
+.ttrpg-sb-note-button-designer-description {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.ttrpg-sb-note-button-designer-tracks {
+  margin-top: 16px;
+}
+
+.ttrpg-sb-note-button-designer-tracks.is-hidden {
+  display: none;
+}
+
+.ttrpg-sb-note-button-track-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.ttrpg-sb-note-button-track-checkbox:hover {
+  background: var(--background-modifier-hover);
 }
 
 /* ===== Simple list view ===== */

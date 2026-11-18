@@ -1,8 +1,9 @@
-import { App, FuzzySuggestModal, TFile } from "obsidian";
+import { App, FuzzySuggestModal } from "obsidian";
 import type TTRPGSoundboardPlugin from "../main";
+import type { LibraryFile } from "../util/externalFiles";
 
 export interface QuickPlayItem {
-  file: TFile;
+  file: LibraryFile;
   label: string;
   context: string;
 }
